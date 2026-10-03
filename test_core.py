@@ -48,7 +48,35 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.database.delete_owned(expense_id, 7))
         self.assertTrue(await self.database.delete_owned(expense_id, 42))
 
+    async def test_custom_categories_and_history_filter(self) -> None:
+        now = datetime(2026, 10, 2, 12, 30, tzinfo=ZoneInfo("Asia/Almaty"))
+        category = await self.database.add_custom_category(
+            42, "expense", "☕ Кофе", now
+        )
+        self.assertIsNotNone(category)
+        self.assertIsNone(
+            await self.database.add_custom_category(42, "expense", "☕ Кофе", now)
+        )
+        self.assertEqual(
+            [item.name for item in await self.database.custom_categories(42, "expense")],
+            ["☕ Кофе"],
+        )
+
+        await self.database.add_transaction(
+            42, "expense", "custom|☕ Кофе", 180000, None, now
+        )
+        await self.database.add_transaction(
+            42, "income", "salary", 5000000, None, now
+        )
+        expenses = await self.database.recent(42, kind="expense")
+        self.assertEqual(len(expenses), 1)
+        self.assertEqual(expenses[0].category, "custom|☕ Кофе")
+
+        assert category is not None
+        self.assertFalse(await self.database.delete_custom_category(category.id, 7))
+        self.assertTrue(await self.database.delete_custom_category(category.id, 42))
+        self.assertEqual(len(await self.database.recent(42, kind="expense")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-

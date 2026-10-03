@@ -18,6 +18,15 @@ class Transaction:
     created_at: str
 
 
+@dataclass(frozen=True)
+class CustomCategory:
+    id: int
+    user_id: int
+    kind: str
+    name: str
+    created_at: str
+
+
 class Database:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
@@ -51,6 +60,24 @@ class Database:
                 """
                 CREATE INDEX IF NOT EXISTS idx_transactions_user_created
                 ON transactions(user_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('expense', 'income')),
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, kind, name)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_custom_categories_user_kind
+                ON custom_categories(user_id, kind, id)
                 """
             )
 
@@ -93,22 +120,136 @@ class Database:
             )
             return int(cursor.lastrowid)
 
-    async def recent(self, user_id: int, limit: int = 10) -> list[Transaction]:
-        return await asyncio.to_thread(self._recent_sync, user_id, limit)
+    async def recent(
+        self,
+        user_id: int,
+        limit: int = 10,
+        kind: str | None = None,
+    ) -> list[Transaction]:
+        return await asyncio.to_thread(self._recent_sync, user_id, limit, kind)
 
-    def _recent_sync(self, user_id: int, limit: int) -> list[Transaction]:
+    def _recent_sync(
+        self,
+        user_id: int,
+        limit: int,
+        kind: str | None,
+    ) -> list[Transaction]:
+        condition = "user_id = ?"
+        params: list[object] = [user_id]
+        if kind:
+            condition += " AND kind = ?"
+            params.append(kind)
+        params.append(limit)
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, user_id, kind, category, amount_minor, note, created_at
                 FROM transactions
-                WHERE user_id = ?
+                WHERE {condition}
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                params,
             ).fetchall()
         return [Transaction(**dict(row)) for row in rows]
+
+    async def custom_categories(
+        self,
+        user_id: int,
+        kind: str,
+    ) -> list[CustomCategory]:
+        return await asyncio.to_thread(self._custom_categories_sync, user_id, kind)
+
+    def _custom_categories_sync(
+        self,
+        user_id: int,
+        kind: str,
+    ) -> list[CustomCategory]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, user_id, kind, name, created_at
+                FROM custom_categories
+                WHERE user_id = ? AND kind = ?
+                ORDER BY id
+                """,
+                (user_id, kind),
+            ).fetchall()
+        return [CustomCategory(**dict(row)) for row in rows]
+
+    async def add_custom_category(
+        self,
+        user_id: int,
+        kind: str,
+        name: str,
+        created_at: datetime,
+    ) -> CustomCategory | None:
+        return await asyncio.to_thread(
+            self._add_custom_category_sync,
+            user_id,
+            kind,
+            name,
+            created_at.isoformat(timespec="seconds"),
+        )
+
+    def _add_custom_category_sync(
+        self,
+        user_id: int,
+        kind: str,
+        name: str,
+        created_at: str,
+    ) -> CustomCategory | None:
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO custom_categories (user_id, kind, name, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (user_id, kind, name, created_at),
+                )
+                item_id = int(cursor.lastrowid)
+        except sqlite3.IntegrityError:
+            return None
+        return CustomCategory(item_id, user_id, kind, name, created_at)
+
+    async def get_custom_category(
+        self,
+        item_id: int,
+        user_id: int,
+    ) -> CustomCategory | None:
+        return await asyncio.to_thread(self._get_custom_category_sync, item_id, user_id)
+
+    def _get_custom_category_sync(
+        self,
+        item_id: int,
+        user_id: int,
+    ) -> CustomCategory | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, user_id, kind, name, created_at
+                FROM custom_categories
+                WHERE id = ? AND user_id = ?
+                """,
+                (item_id, user_id),
+            ).fetchone()
+        return CustomCategory(**dict(row)) if row else None
+
+    async def delete_custom_category(self, item_id: int, user_id: int) -> bool:
+        return await asyncio.to_thread(
+            self._delete_custom_category_sync,
+            item_id,
+            user_id,
+        )
+
+    def _delete_custom_category_sync(self, item_id: int, user_id: int) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM custom_categories WHERE id = ? AND user_id = ?",
+                (item_id, user_id),
+            )
+            return cursor.rowcount == 1
 
     async def totals(
         self,
