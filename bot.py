@@ -6,8 +6,10 @@ import logging
 import os
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -28,17 +30,20 @@ from keyboards import (
     confirm_undo_keyboard,
     custom_label,
     history_keyboard,
+    iphone_setup_keyboard,
     main_keyboard,
     manage_categories_keyboard,
     manage_kind_keyboard,
     note_keyboard,
     summary_keyboard,
 )
+from shortcut_api import create_app
 
 
 router = Router()
 db: Database
 timezone: ZoneInfo
+public_base_url: str | None
 
 
 class AddTransaction(StatesGroup):
@@ -164,6 +169,34 @@ async def command_help(message: Message) -> None:
         "Во время добавления используйте кнопки «Назад» и «Отмена». Комментарий необязателен.",
         reply_markup=main_keyboard(),
     )
+
+
+@router.message(Command("iphone"))
+@router.message(F.text == "📱 iPhone")
+async def iphone_setup(message: Message) -> None:
+    if not public_base_url:
+        await message.answer(
+            "Быстрая запись ещё не подключена к публичному адресу сервера."
+        )
+        return
+    token = await db.rotate_shortcut_token(message.chat.id, datetime.now(timezone))
+    url = f"{public_base_url}/iphone?t={quote(token, safe='')}"
+    await message.answer(
+        "<b>Быстрая запись с iPhone</b>\n\n"
+        "1. Откройте персональную ссылку кнопкой ниже.\n"
+        "2. В приложении «Команды» создайте команду с действием «Открыть URL» и вставьте эту ссылку.\n"
+        "3. Добавьте созданную команду в Пункт управления.\n\n"
+        "После этого расходы и доходы можно записывать без открытия Telegram. "
+        "Новая ссылка автоматически отключает предыдущую.",
+        reply_markup=iphone_setup_keyboard(url),
+    )
+
+
+@router.callback_query(F.data == "iphone_close")
+async def iphone_close(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text("Настройка iPhone закрыта.")
 
 
 @router.message(Command("cancel"))
@@ -582,7 +615,7 @@ async def unknown_message(message: Message) -> None:
 
 
 async def main() -> None:
-    global db, timezone
+    global db, timezone, public_base_url
 
     load_dotenv()
     token = os.getenv("BOT_TOKEN")
@@ -598,11 +631,24 @@ async def main() -> None:
     db = Database(os.getenv("DATABASE_PATH", "data/finance.db"))
     await db.initialize()
 
+    configured_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    public_base_url = configured_url or (f"https://{railway_domain}" if railway_domain else None)
+
+    api_app = create_app(db, timezone)
+    api_runner = web.AppRunner(api_app, access_log=None)
+    await api_runner.setup()
+    api_site = web.TCPSite(api_runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
+    await api_site.start()
+
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    await dispatcher.start_polling(bot)
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await api_runner.cleanup()
 
 
 if __name__ == "__main__":

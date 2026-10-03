@@ -35,10 +35,20 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="➖ Расход"), KeyboardButton(text="➕ Доход")],
             [KeyboardButton(text="📊 Сводка"), KeyboardButton(text="🕘 История")],
             [KeyboardButton(text="⚙️ Категории"), KeyboardButton(text="↩️ Удалить последнюю")],
+            [KeyboardButton(text="📱 iPhone")],
             [KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие",
+    )
+
+
+def iphone_setup_keyboard(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ Открыть быструю запись", url=url)],
+            [InlineKeyboardButton(text="✕ Закрыть", callback_data="iphone_close")],
+        ]
     )
 
 

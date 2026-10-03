@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -78,6 +80,15 @@ class Database:
                 """
                 CREATE INDEX IF NOT EXISTS idx_custom_categories_user_kind
                 ON custom_categories(user_id, kind, id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shortcut_access (
+                    user_id INTEGER PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                )
                 """
             )
 
@@ -316,3 +327,49 @@ class Database:
                 (transaction_id, user_id),
             )
             return cursor.rowcount == 1
+
+    async def rotate_shortcut_token(self, user_id: int, created_at: datetime) -> str:
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        await asyncio.to_thread(
+            self._store_shortcut_token_sync,
+            user_id,
+            token_hash,
+            created_at.isoformat(timespec="seconds"),
+        )
+        return token
+
+    def _store_shortcut_token_sync(
+        self,
+        user_id: int,
+        token_hash: str,
+        created_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO shortcut_access (user_id, token_hash, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    token_hash = excluded.token_hash,
+                    created_at = excluded.created_at
+                """,
+                (user_id, token_hash, created_at),
+            )
+
+    async def user_by_shortcut_token(self, token: str) -> int | None:
+        if not token or len(token) > 256:
+            return None
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return await asyncio.to_thread(
+            self._user_by_shortcut_token_sync,
+            token_hash,
+        )
+
+    def _user_by_shortcut_token_sync(self, token_hash: str) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT user_id FROM shortcut_access WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        return int(row["user_id"]) if row else None
