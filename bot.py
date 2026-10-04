@@ -21,6 +21,9 @@ from dotenv import load_dotenv
 
 from database import Database, Transaction
 from keyboards import (
+    account_keyboard,
+    account_manage_keyboard,
+    accounts_manage_keyboard,
     add_kind_keyboard,
     amount_keyboard,
     back_cancel_keyboard,
@@ -36,6 +39,7 @@ from keyboards import (
     manage_kind_keyboard,
     note_keyboard,
     summary_keyboard,
+    transfer_account_keyboard,
 )
 from shortcut_api import create_app
 
@@ -49,12 +53,23 @@ public_base_url: str | None
 class AddTransaction(StatesGroup):
     choosing_category = State()
     entering_category = State()
+    choosing_account = State()
     entering_amount = State()
     entering_note = State()
 
 
 class ManageCategory(StatesGroup):
     entering_name = State()
+
+
+class ManageAccount(StatesGroup):
+    entering_name = State()
+    entering_balance = State()
+    renaming = State()
+    editing_balance = State()
+    choosing_transfer_from = State()
+    choosing_transfer_to = State()
+    entering_transfer_amount = State()
 
 
 def parse_amount(value: str) -> int | None:
@@ -64,6 +79,18 @@ def parse_amount(value: str) -> int | None:
     except InvalidOperation:
         return None
     if not amount.is_finite() or amount <= 0 or amount > Decimal("999999999.99"):
+        return None
+    return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def parse_balance(value: str) -> int | None:
+    cleaned = value.strip().replace(" ", "").replace(",", ".")
+    try:
+        amount = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    limit = Decimal("999999999.99")
+    if not amount.is_finite() or amount < -limit or amount > limit:
         return None
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
@@ -80,7 +107,8 @@ def format_transaction(item: Transaction) -> str:
     label = html.escape(category_label(item.kind, item.category))
     date = datetime.fromisoformat(item.created_at).strftime("%d.%m · %H:%M")
     note = f"\n<i>{html.escape(item.note)}</i>" if item.note else ""
-    return f"{date}  {label}\n<b>{sign}{format_money(item.amount_minor)}</b>{note}"
+    account = f" · 💳 {html.escape(item.account_name)}" if item.account_name else ""
+    return f"{date}  {label}{account}\n<b>{sign}{format_money(item.amount_minor)}</b>{note}"
 
 
 def normalize_category_name(value: str) -> str | None:
@@ -90,12 +118,25 @@ def normalize_category_name(value: str) -> str | None:
     return name
 
 
+def normalize_account_name(value: str) -> str | None:
+    name = " ".join(value.strip().split())
+    if not 2 <= len(name) <= 24 or "|" in name:
+        return None
+    return name
+
+
 async def get_custom_pairs(user_id: int, kind: str) -> list[tuple[int, str]]:
     items = await db.custom_categories(user_id, kind)
     return [(item.id, item.name) for item in items]
 
 
+async def get_account_pairs(user_id: int) -> list[tuple[int, str, int]]:
+    items = await db.accounts(user_id)
+    return [(item.id, item.name, item.balance_minor) for item in items]
+
+
 async def start_transaction(message: Message, state: FSMContext, kind: str) -> None:
+    await db.ensure_default_account(message.chat.id, datetime.now(timezone))
     await state.clear()
     await state.set_state(AddTransaction.choosing_category)
     await state.update_data(kind=kind)
@@ -103,7 +144,7 @@ async def start_transaction(message: Message, state: FSMContext, kind: str) -> N
     custom = await get_custom_pairs(message.chat.id, kind)
     await message.answer("Добавляем операцию…", reply_markup=ReplyKeyboardRemove())
     await message.answer(
-        f"<b>1 из 3 · Категория {title}</b>\n\nКуда отнести операцию?",
+        f"<b>1 из 4 · Категория {title}</b>\n\nКуда отнести операцию?",
         reply_markup=categories_keyboard(kind, custom),
     )
 
@@ -115,8 +156,17 @@ async def edit_category_step(message: Message, state: FSMContext, user_id: int) 
     custom = await get_custom_pairs(user_id, kind)
     await state.set_state(AddTransaction.choosing_category)
     await message.edit_text(
-        f"<b>1 из 3 · Категория {title}</b>\n\nКуда отнести операцию?",
+        f"<b>1 из 4 · Категория {title}</b>\n\nКуда отнести операцию?",
         reply_markup=categories_keyboard(kind, custom),
+    )
+
+
+async def edit_account_step(message: Message, state: FSMContext, user_id: int) -> None:
+    accounts = await get_account_pairs(user_id)
+    await state.set_state(AddTransaction.choosing_account)
+    await message.edit_text(
+        "<b>2 из 4 · Счёт</b>\n\nКакой счёт использовать?",
+        reply_markup=account_keyboard(accounts),
     )
 
 
@@ -126,7 +176,7 @@ async def edit_amount_step(message: Message, state: FSMContext) -> None:
     category = str(data["category"])
     await state.set_state(AddTransaction.entering_amount)
     await message.edit_text(
-        "<b>2 из 3 · Сумма</b>\n\n"
+        "<b>3 из 4 · Сумма</b>\n\n"
         f"{html.escape(category_label(kind, category))}\n"
         "Выберите или введите сумму:",
         reply_markup=amount_keyboard(),
@@ -137,7 +187,7 @@ async def edit_note_step(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.set_state(AddTransaction.entering_note)
     await message.edit_text(
-        "<b>3 из 3 · Комментарий</b>\n\n"
+        "<b>4 из 4 · Комментарий</b>\n\n"
         f"Сумма: <b>{format_money(int(data['amount_minor']))}</b>\n"
         "Напишите комментарий или сохраните без него:",
         reply_markup=note_keyboard(),
@@ -147,6 +197,7 @@ async def edit_note_step(message: Message, state: FSMContext) -> None:
 @router.message(CommandStart())
 async def command_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+    await db.ensure_default_account(message.chat.id, datetime.now(timezone))
     name = html.escape(message.from_user.first_name) if message.from_user else ""
     await message.answer(
         f"Привет, {name}! 👋\n\n"
@@ -164,6 +215,7 @@ async def command_help(message: Message) -> None:
         "➖ <b>Расход</b> и ➕ <b>Доход</b> — новая операция.\n"
         "📊 <b>Сводка</b> — баланс и основные траты.\n"
         "🕘 <b>История</b> — последние операции с фильтром.\n"
+        "💳 <b>Счета</b> — остатки, новые счета и переводы между ними.\n"
         "⚙️ <b>Категории</b> — свои направления доходов и расходов.\n"
         "↩️ <b>Удалить последнюю</b> — исправить ошибочную запись.\n\n"
         "Во время добавления используйте кнопки «Назад» и «Отмена». Комментарий необязателен.",
@@ -252,7 +304,7 @@ async def choose_category(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(category=category)
     await callback.answer()
     if callback.message:
-        await edit_amount_step(callback.message, state)
+        await edit_account_step(callback.message, state, callback.from_user.id)
 
 
 @router.callback_query(AddTransaction.choosing_category, F.data.startswith("flow_add_category:"))
@@ -286,12 +338,11 @@ async def save_flow_category(message: Message, state: FSMContext) -> None:
         await message.answer("Такая категория уже существует. Введите другое название.")
         return
     await state.update_data(category=f"custom|{item.name}")
-    await state.set_state(AddTransaction.entering_amount)
+    accounts = await get_account_pairs(message.chat.id)
+    await state.set_state(AddTransaction.choosing_account)
     await message.answer(
-        "<b>2 из 3 · Сумма</b>\n\n"
-        f"{html.escape(custom_label(item.name))}\n"
-        "Выберите или введите сумму:",
-        reply_markup=amount_keyboard(),
+        "<b>2 из 4 · Счёт</b>\n\nКакой счёт использовать?",
+        reply_markup=account_keyboard(accounts),
     )
 
 
@@ -306,6 +357,33 @@ async def back_to_category(callback: CallbackQuery, state: FSMContext) -> None:
         await edit_category_step(callback.message, state, callback.from_user.id)
 
 
+@router.callback_query(
+    AddTransaction.choosing_account,
+    F.data.startswith("account_select:"),
+)
+async def choose_account(callback: CallbackQuery, state: FSMContext) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    account = await db.get_account(account_id, callback.from_user.id)
+    if account is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    await state.update_data(account_id=account.id, account_name=account.name)
+    await callback.answer()
+    if callback.message:
+        await edit_amount_step(callback.message, state)
+
+
+@router.callback_query(F.data == "flow_back:account")
+async def back_to_account(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if "category" not in data:
+        await callback.answer("Действие уже завершено")
+        return
+    await callback.answer()
+    if callback.message:
+        await edit_account_step(callback.message, state, callback.from_user.id)
+
+
 @router.callback_query(AddTransaction.entering_amount, F.data.startswith("amount:"))
 async def choose_amount(callback: CallbackQuery, state: FSMContext) -> None:
     value = callback.data.split(":", maxsplit=1)[1]
@@ -314,8 +392,8 @@ async def choose_amount(callback: CallbackQuery, state: FSMContext) -> None:
         return
     if value == "custom":
         await callback.message.edit_text(
-            "<b>2 из 3 · Сумма</b>\n\nВведите сумму сообщением, например: <b>1250,50</b>",
-            reply_markup=back_cancel_keyboard("flow_back:category"),
+            "<b>3 из 4 · Сумма</b>\n\nВведите сумму сообщением, например: <b>1250,50</b>",
+            reply_markup=back_cancel_keyboard("flow_back:account"),
         )
         return
     await state.update_data(amount_minor=int(value) * 100)
@@ -331,7 +409,7 @@ async def enter_amount(message: Message, state: FSMContext) -> None:
     await state.update_data(amount_minor=amount_minor)
     await state.set_state(AddTransaction.entering_note)
     await message.answer(
-        "<b>3 из 3 · Комментарий</b>\n\n"
+        "<b>4 из 4 · Комментарий</b>\n\n"
         f"Сумма: <b>{format_money(amount_minor)}</b>\n"
         "Напишите комментарий или сохраните без него:",
         reply_markup=note_keyboard(),
@@ -358,9 +436,19 @@ async def save_transaction(
     data = await state.get_data()
     kind = str(data["kind"])
     category = str(data["category"])
+    account_id = int(data["account_id"])
+    account_name = str(data["account_name"])
     amount_minor = int(data["amount_minor"])
     now = datetime.now(timezone)
-    await db.add_transaction(user_id, kind, category, amount_minor, note, now)
+    await db.add_transaction(
+        user_id,
+        kind,
+        category,
+        amount_minor,
+        note,
+        now,
+        account_id=account_id,
+    )
     await state.clear()
     sign = "−" if kind == "expense" else "+"
     verb = "Расход сохранён" if kind == "expense" else "Доход сохранён"
@@ -368,6 +456,7 @@ async def save_transaction(
     await message.answer(
         f"✅ <b>{verb}</b>\n\n"
         f"{html.escape(category_label(kind, category))}\n"
+        f"💳 {html.escape(account_name)}\n"
         f"<b>{sign}{format_money(amount_minor)}</b>{note_line}\n"
         f"{now.strftime('%d.%m.%Y · %H:%M')}",
         reply_markup=main_keyboard(),
@@ -435,6 +524,8 @@ async def send_summary(message: Message, period: str, edit: bool = False) -> Non
     start, title = period_start(period)
     income_total, expense_total, categories = await db.totals(message.chat.id, start)
     balance = income_total - expense_total
+    accounts = await db.accounts(message.chat.id)
+    accounts_total = sum(item.balance_minor for item in accounts)
     sign = "+" if balance > 0 else ("−" if balance < 0 else "")
     lines = [
         f"<b>📊 {title}</b>",
@@ -442,6 +533,7 @@ async def send_summary(message: Message, period: str, edit: bool = False) -> Non
         f"Доходы      <b>+{format_money(income_total)}</b>",
         f"Расходы     <b>−{format_money(expense_total)}</b>",
         f"Баланс       <b>{sign}{format_money(abs(balance))}</b>",
+        f"На счетах   <b>{format_money(accounts_total)}</b>",
     ]
     if categories:
         lines.extend(["", "<b>Основные расходы</b>"])
@@ -574,6 +666,280 @@ async def delete_category(callback: CallbackQuery) -> None:
     await callback.answer("Удалено")
     if callback.message:
         await show_manage_panel(callback.message, callback.from_user.id, item.kind)
+
+
+async def show_accounts_panel(
+    message: Message,
+    user_id: int,
+    edit: bool = False,
+) -> None:
+    await db.ensure_default_account(user_id, datetime.now(timezone))
+    accounts = await db.accounts(user_id)
+    total = sum(item.balance_minor for item in accounts)
+    lines = ["<b>💳 Ваши счета</b>", ""]
+    lines.extend(
+        f"<b>{html.escape(item.name)}</b> — {format_money(item.balance_minor)}"
+        for item in accounts
+    )
+    lines.extend(["", f"Всего на счетах: <b>{format_money(total)}</b>"])
+    pairs = [(item.id, item.name, item.balance_minor) for item in accounts]
+    markup = accounts_manage_keyboard(pairs)
+    if edit:
+        await message.edit_text("\n".join(lines), reply_markup=markup)
+    else:
+        await message.answer("\n".join(lines), reply_markup=markup)
+
+
+@router.message(Command("accounts"))
+@router.message(F.text == "💳 Счета")
+async def manage_accounts(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await show_accounts_panel(message, message.chat.id)
+
+
+@router.callback_query(F.data == "accounts:back")
+async def accounts_back(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    if callback.message:
+        await show_accounts_panel(callback.message, callback.from_user.id, edit=True)
+
+
+@router.callback_query(F.data == "accounts:close")
+async def accounts_close(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text("Счета закрыты.")
+        await callback.message.answer("Главное меню:", reply_markup=main_keyboard())
+
+
+@router.callback_query(F.data == "accounts:add")
+async def account_add_start(callback: CallbackQuery, state: FSMContext) -> None:
+    accounts = await db.accounts(callback.from_user.id)
+    if len(accounts) >= 12:
+        await callback.answer("Можно создать не более 12 счетов", show_alert=True)
+        return
+    await state.set_state(ManageAccount.entering_name)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Новый счёт</b>\n\nВведите название, например: <b>Kaspi</b>, <b>Наличные</b> или <b>Накопления</b>.",
+            reply_markup=back_cancel_keyboard("accounts:back"),
+        )
+
+
+@router.message(ManageAccount.entering_name)
+async def account_add_name(message: Message, state: FSMContext) -> None:
+    name = normalize_account_name(message.text or "")
+    if name is None:
+        await message.answer("Название счёта должно содержать от 2 до 24 символов.")
+        return
+    await state.update_data(account_name=name)
+    await state.set_state(ManageAccount.entering_balance)
+    await message.answer(
+        "<b>Начальный остаток</b>\n\nСколько денег сейчас находится на этом счёте? Можно ввести 0 или отрицательное значение.",
+        reply_markup=back_cancel_keyboard("accounts:back"),
+    )
+
+
+@router.message(ManageAccount.entering_balance)
+async def account_add_balance(message: Message, state: FSMContext) -> None:
+    balance_minor = parse_balance(message.text or "")
+    if balance_minor is None:
+        await message.answer("Введите корректный остаток, например: 250000 или -15000.")
+        return
+    data = await state.get_data()
+    item = await db.add_account(
+        message.chat.id,
+        str(data["account_name"]),
+        balance_minor,
+        datetime.now(timezone),
+    )
+    if item is None:
+        await state.set_state(ManageAccount.entering_name)
+        await message.answer("Счёт с таким названием уже существует.")
+        return
+    await state.clear()
+    await message.answer(
+        f"✅ Счёт <b>{html.escape(item.name)}</b> создан с остатком <b>{format_money(item.balance_minor)}</b>."
+    )
+    await show_accounts_panel(message, message.chat.id)
+
+
+@router.callback_query(F.data.startswith("account_manage:"))
+async def account_manage(callback: CallbackQuery) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    item = await db.get_account(account_id, callback.from_user.id)
+    if item is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            f"<b>💳 {html.escape(item.name)}</b>\n\nТекущий остаток: <b>{format_money(item.balance_minor)}</b>",
+            reply_markup=account_manage_keyboard(item.id),
+        )
+
+
+@router.callback_query(F.data.startswith("account_balance:"))
+async def account_balance_start(callback: CallbackQuery, state: FSMContext) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    item = await db.get_account(account_id, callback.from_user.id)
+    if item is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    await state.set_state(ManageAccount.editing_balance)
+    await state.update_data(account_id=item.id, account_name=item.name)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            f"<b>Новый остаток · {html.escape(item.name)}</b>\n\nВведите фактическую сумму на счёте:",
+            reply_markup=back_cancel_keyboard("accounts:back"),
+        )
+
+
+@router.callback_query(F.data.startswith("account_rename:"))
+async def account_rename_start(callback: CallbackQuery, state: FSMContext) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    item = await db.get_account(account_id, callback.from_user.id)
+    if item is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    await state.set_state(ManageAccount.renaming)
+    await state.update_data(account_id=item.id, account_name=item.name)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            f"<b>Переименовать · {html.escape(item.name)}</b>\n\nВведите новое название:",
+            reply_markup=back_cancel_keyboard("accounts:back"),
+        )
+
+
+@router.message(ManageAccount.renaming)
+async def account_rename_save(message: Message, state: FSMContext) -> None:
+    name = normalize_account_name(message.text or "")
+    if name is None:
+        await message.answer("Название должно содержать от 2 до 24 символов.")
+        return
+    data = await state.get_data()
+    changed = await db.rename_account(
+        int(data["account_id"]),
+        message.chat.id,
+        name,
+    )
+    if not changed:
+        await message.answer("Такое название уже используется.")
+        return
+    await state.clear()
+    await message.answer(f"✅ Счёт переименован: <b>{html.escape(name)}</b>.")
+    await show_accounts_panel(message, message.chat.id)
+
+
+@router.message(ManageAccount.editing_balance)
+async def account_balance_save(message: Message, state: FSMContext) -> None:
+    balance_minor = parse_balance(message.text or "")
+    if balance_minor is None:
+        await message.answer("Введите корректную сумму.")
+        return
+    data = await state.get_data()
+    changed = await db.set_account_balance(
+        int(data["account_id"]),
+        message.chat.id,
+        balance_minor,
+    )
+    await state.clear()
+    if not changed:
+        await message.answer("Счёт не найден.")
+        return
+    await message.answer(
+        f"✅ Остаток счёта <b>{html.escape(str(data['account_name']))}</b> обновлён: <b>{format_money(balance_minor)}</b>."
+    )
+    await show_accounts_panel(message, message.chat.id)
+
+
+@router.callback_query(F.data == "accounts:transfer")
+async def transfer_start(callback: CallbackQuery, state: FSMContext) -> None:
+    accounts = await get_account_pairs(callback.from_user.id)
+    if len(accounts) < 2:
+        await callback.answer("Для перевода нужно минимум два счёта", show_alert=True)
+        return
+    await state.set_state(ManageAccount.choosing_transfer_from)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Перевод · откуда</b>\n\nВыберите счёт списания:",
+            reply_markup=transfer_account_keyboard(accounts, "from"),
+        )
+
+
+@router.callback_query(
+    ManageAccount.choosing_transfer_from,
+    F.data.startswith("transfer_from:"),
+)
+async def transfer_from(callback: CallbackQuery, state: FSMContext) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    item = await db.get_account(account_id, callback.from_user.id)
+    if item is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    await state.update_data(from_account_id=item.id, from_account_name=item.name)
+    await state.set_state(ManageAccount.choosing_transfer_to)
+    accounts = await get_account_pairs(callback.from_user.id)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Перевод · куда</b>\n\nВыберите счёт зачисления:",
+            reply_markup=transfer_account_keyboard(accounts, "to", item.id),
+        )
+
+
+@router.callback_query(
+    ManageAccount.choosing_transfer_to,
+    F.data.startswith("transfer_to:"),
+)
+async def transfer_to(callback: CallbackQuery, state: FSMContext) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    item = await db.get_account(account_id, callback.from_user.id)
+    if item is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    data = await state.get_data()
+    if item.id == int(data["from_account_id"]):
+        await callback.answer("Выберите другой счёт", show_alert=True)
+        return
+    await state.update_data(to_account_id=item.id, to_account_name=item.name)
+    await state.set_state(ManageAccount.entering_transfer_amount)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            f"<b>Сумма перевода</b>\n\n{html.escape(str(data['from_account_name']))} → {html.escape(item.name)}\nВведите сумму:",
+            reply_markup=back_cancel_keyboard("accounts:back"),
+        )
+
+
+@router.message(ManageAccount.entering_transfer_amount)
+async def transfer_save(message: Message, state: FSMContext) -> None:
+    amount_minor = parse_amount(message.text or "")
+    if amount_minor is None:
+        await message.answer("Введите сумму перевода больше нуля.")
+        return
+    data = await state.get_data()
+    await db.transfer(
+        message.chat.id,
+        int(data["from_account_id"]),
+        int(data["to_account_id"]),
+        amount_minor,
+        None,
+        datetime.now(timezone),
+    )
+    await state.clear()
+    await message.answer(
+        "✅ Перевод выполнен\n\n"
+        f"{html.escape(str(data['from_account_name']))} → {html.escape(str(data['to_account_name']))}\n"
+        f"<b>{format_money(amount_minor)}</b>"
+    )
+    await show_accounts_panel(message, message.chat.id)
 
 
 @router.message(F.text.in_({"↩️ Удалить последнюю", "↩️ Отменить последнюю"}))

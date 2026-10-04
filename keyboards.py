@@ -34,8 +34,8 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="➖ Расход"), KeyboardButton(text="➕ Доход")],
             [KeyboardButton(text="📊 Сводка"), KeyboardButton(text="🕘 История")],
-            [KeyboardButton(text="⚙️ Категории"), KeyboardButton(text="↩️ Удалить последнюю")],
-            [KeyboardButton(text="📱 iPhone")],
+            [KeyboardButton(text="💳 Счета"), KeyboardButton(text="⚙️ Категории")],
+            [KeyboardButton(text="↩️ Удалить последнюю"), KeyboardButton(text="📱 iPhone")],
             [KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
@@ -78,6 +78,25 @@ def categories_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def account_keyboard(accounts: list[tuple[int, str, int]]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"💳 {name}",
+                callback_data=f"account_select:{account_id}",
+            )
+        ]
+        for account_id, name, _ in accounts
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(text="‹ Назад", callback_data="flow_back:category"),
+            InlineKeyboardButton(text="✕ Отмена", callback_data="cancel"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def amount_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -91,7 +110,7 @@ def amount_keyboard() -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton(text="⌨️ Ввести другую сумму", callback_data="amount:custom")],
             [
-                InlineKeyboardButton(text="‹ Назад", callback_data="flow_back:category"),
+                InlineKeyboardButton(text="‹ Назад", callback_data="flow_back:account"),
                 InlineKeyboardButton(text="✕ Отмена", callback_data="cancel"),
             ],
         ]
@@ -184,6 +203,65 @@ def manage_kind_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✕ Закрыть", callback_data="manage:close")],
         ]
     )
+
+
+def accounts_manage_keyboard(accounts: list[tuple[int, str, int]]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"✏️ {name}",
+                callback_data=f"account_manage:{account_id}",
+            )
+        ]
+        for account_id, name, _ in accounts
+    ]
+    rows.extend(
+        [
+            [InlineKeyboardButton(text="＋ Добавить счёт", callback_data="accounts:add")],
+            [InlineKeyboardButton(text="⇄ Перевести между счетами", callback_data="accounts:transfer")],
+            [InlineKeyboardButton(text="✕ Закрыть", callback_data="accounts:close")],
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def account_manage_keyboard(account_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Переименовать",
+                    callback_data=f"account_rename:{account_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Установить остаток",
+                    callback_data=f"account_balance:{account_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="‹ Назад", callback_data="accounts:back")],
+        ]
+    )
+
+
+def transfer_account_keyboard(
+    accounts: list[tuple[int, str, int]],
+    direction: str,
+    excluded_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"💳 {name}",
+                callback_data=f"transfer_{direction}:{account_id}",
+            )
+        ]
+        for account_id, name, _ in accounts
+        if account_id != excluded_id
+    ]
+    rows.append([InlineKeyboardButton(text="‹ К счетам", callback_data="accounts:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def manage_categories_keyboard(
