@@ -159,6 +159,21 @@ class Database:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shortcut_access_history (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_shortcut_access_history_user
+                ON shortcut_access_history(user_id, created_at DESC)
+                """
+            )
 
     async def add_transaction(
         self,
@@ -668,6 +683,19 @@ class Database:
         created_at: str,
     ) -> None:
         with self._connect() as connection:
+            previous = connection.execute(
+                "SELECT token_hash, created_at FROM shortcut_access WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if previous is not None:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO shortcut_access_history
+                        (token_hash, user_id, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (str(previous["token_hash"]), user_id, str(previous["created_at"])),
+                )
             connection.execute(
                 """
                 INSERT INTO shortcut_access (user_id, token_hash, created_at)
@@ -677,6 +705,52 @@ class Database:
                     created_at = excluded.created_at
                 """,
                 (user_id, token_hash, created_at),
+            )
+            connection.execute(
+                """
+                DELETE FROM shortcut_access_history
+                WHERE user_id = ? AND token_hash NOT IN (
+                    SELECT token_hash FROM shortcut_access_history
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 5
+                )
+                """,
+                (user_id, user_id),
+            )
+
+    async def add_shortcut_token_alias(
+        self,
+        current_token: str,
+        alias_token: str,
+        created_at: datetime,
+    ) -> bool:
+        user_id = await self.user_by_shortcut_token(current_token)
+        if user_id is None or not alias_token or len(alias_token) > 256:
+            return False
+        alias_hash = hashlib.sha256(alias_token.encode("utf-8")).hexdigest()
+        await asyncio.to_thread(
+            self._add_shortcut_token_alias_sync,
+            user_id,
+            alias_hash,
+            created_at.isoformat(timespec="seconds"),
+        )
+        return True
+
+    def _add_shortcut_token_alias_sync(
+        self,
+        user_id: int,
+        token_hash: str,
+        created_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO shortcut_access_history
+                    (token_hash, user_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (token_hash, user_id, created_at),
             )
 
     async def user_by_shortcut_token(self, token: str) -> int | None:
@@ -694,4 +768,9 @@ class Database:
                 "SELECT user_id FROM shortcut_access WHERE token_hash = ?",
                 (token_hash,),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT user_id FROM shortcut_access_history WHERE token_hash = ?",
+                    (token_hash,),
+                ).fetchone()
         return int(row["user_id"]) if row else None

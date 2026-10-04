@@ -130,8 +130,12 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.database.user_by_shortcut_token(first), 42)
         second = await self.database.rotate_shortcut_token(42, now)
         self.assertNotEqual(first, second)
-        self.assertIsNone(await self.database.user_by_shortcut_token(first))
+        self.assertEqual(await self.database.user_by_shortcut_token(first), 42)
         self.assertEqual(await self.database.user_by_shortcut_token(second), 42)
+
+        alias = "existing-native-shortcut-token"
+        self.assertTrue(await self.database.add_shortcut_token_alias(second, alias, now))
+        self.assertEqual(await self.database.user_by_shortcut_token(alias), 42)
 
     async def test_accounts_balances_transfer_and_undo(self) -> None:
         now = datetime(2026, 10, 3, 12, 30, tzinfo=ZoneInfo("Asia/Almaty"))

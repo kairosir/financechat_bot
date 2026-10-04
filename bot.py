@@ -239,7 +239,7 @@ async def iphone_setup(message: Message) -> None:
         "2. В приложении «Команды» создайте команду с действием «Открыть URL» и вставьте эту ссылку.\n"
         "3. Добавьте созданную команду в Пункт управления.\n\n"
         "После этого расходы и доходы можно записывать без открытия Telegram. "
-        "Новая ссылка автоматически отключает предыдущую.",
+        "Несколько последних ссылок остаются рабочими, поэтому готовая команда не сломается.",
         reply_markup=iphone_setup_keyboard(url),
     )
 
@@ -996,6 +996,15 @@ async def main() -> None:
 
     db = Database(os.getenv("DATABASE_PATH", "data/finance.db"))
     await db.initialize()
+
+    current_shortcut_token = os.getenv("SHORTCUT_CURRENT_TOKEN", "").strip()
+    legacy_shortcut_token = os.getenv("SHORTCUT_LEGACY_TOKEN", "").strip()
+    if current_shortcut_token and legacy_shortcut_token:
+        await db.add_shortcut_token_alias(
+            current_shortcut_token,
+            legacy_shortcut_token,
+            datetime.now(timezone),
+        )
 
     configured_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
     railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
