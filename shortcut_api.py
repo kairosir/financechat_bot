@@ -127,6 +127,7 @@ async def shortcut_options(request: web.Request) -> web.Response:
     """Return ready-to-display labels for the native iOS Shortcut dialogs."""
     user_id = await authorized_user(request)
     kind = request.query.get("kind", "expense")
+    kind = {"Расход": "expense", "Доход": "income"}.get(kind, kind)
     if kind not in {"expense", "income"}:
         raise web.HTTPBadRequest(text="Неизвестный тип операции")
 
@@ -189,16 +190,13 @@ async def add_account(request: web.Request) -> web.Response:
     )
 
 
-async def add_transaction(request: web.Request) -> web.Response:
-    user_id = await authorized_user(request)
-    try:
-        payload = await request.json()
-    except (json.JSONDecodeError, web.HTTPBadRequest):
-        raise web.HTTPBadRequest(text="Ожидался JSON")
-    if not isinstance(payload, dict):
-        raise web.HTTPBadRequest(text="Ожидался объект JSON")
-
+async def create_transaction_response(
+    app: web.Application,
+    user_id: int,
+    payload: dict[str, object],
+) -> web.Response:
     kind = str(payload.get("kind", ""))
+    kind = {"Расход": "expense", "Доход": "income"}.get(kind, kind)
     if kind not in {"expense", "income"}:
         raise web.HTTPBadRequest(text="Выберите расход или доход")
 
@@ -213,7 +211,7 @@ async def add_transaction(request: web.Request) -> web.Response:
 
     category = str(payload.get("category", ""))
     defaults = EXPENSE_CATEGORIES if kind == "expense" else INCOME_CATEGORIES
-    database = request.app[DATABASE_KEY]
+    database = app[DATABASE_KEY]
     custom = await database.custom_categories(user_id, kind)
     by_label = {label: key for key, label in defaults.items()}
     by_label.update(
@@ -241,7 +239,7 @@ async def add_transaction(request: web.Request) -> web.Response:
     if account is None:
         raise web.HTTPBadRequest(text="Счёт не найден")
 
-    timezone = request.app[TIMEZONE_KEY]
+    timezone = app[TIMEZONE_KEY]
     now = datetime.now(timezone)
     item_id = await database.add_transaction(
         user_id,
@@ -268,6 +266,27 @@ async def add_transaction(request: web.Request) -> web.Response:
     )
 
 
+async def add_transaction(request: web.Request) -> web.Response:
+    user_id = await authorized_user(request)
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, web.HTTPBadRequest):
+        raise web.HTTPBadRequest(text="Ожидался JSON")
+    if not isinstance(payload, dict):
+        raise web.HTTPBadRequest(text="Ожидался объект JSON")
+    return await create_transaction_response(request.app, user_id, payload)
+
+
+async def add_transaction_shortcut(request: web.Request) -> web.Response:
+    """Compatibility endpoint for native Shortcuts exported on older iOS versions."""
+    token = request.query.get("t", "")
+    user_id = await request.app[DATABASE_KEY].user_by_shortcut_token(token)
+    if user_id is None:
+        raise web.HTTPUnauthorized(text="Ключ недействителен")
+    payload: dict[str, object] = dict(request.query)
+    return await create_transaction_response(request.app, user_id, payload)
+
+
 def create_app(database: Database, timezone: ZoneInfo) -> web.Application:
     app = web.Application(client_max_size=32 * 1024)
     app[DATABASE_KEY] = database
@@ -277,6 +296,7 @@ def create_app(database: Database, timezone: ZoneInfo) -> web.Application:
     app.router.add_get("/api/v1/categories", categories)
     app.router.add_get("/api/v1/accounts", accounts)
     app.router.add_get("/api/v1/shortcut/options", shortcut_options)
+    app.router.add_get("/api/v1/shortcut/add", add_transaction_shortcut)
     app.router.add_post("/api/v1/accounts", add_account)
     app.router.add_post("/api/v1/transactions", add_transaction)
     return app

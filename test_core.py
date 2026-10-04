@@ -203,20 +203,33 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
                 json={
                     "kind": "expense",
                     "category": "🍽 Еда",
-                    "account": kaspi_label,
+                    "account": "Kaspi",
                     "amount": "1250,50",
                     "note": "Обед",
                 },
             )
             self.assertEqual(response.status, 200)
 
+            native_response = await client.get(
+                "/api/v1/shortcut/add",
+                params={
+                    "t": token,
+                    "kind": "Расход",
+                    "category": "🍽 Еда",
+                    "account": "Kaspi",
+                    "amount": "100",
+                    "note": "Команда iPhone",
+                },
+            )
+            self.assertEqual(native_response.status, 200)
+
         items = await self.database.recent(42)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0].amount_minor, 125050)
-        self.assertEqual(items[0].note, "Обед")
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].amount_minor, 10000)
+        self.assertEqual(items[0].note, "Команда iPhone")
         account = await self.database.get_account(account_data["id"], 42)
         assert account is not None
-        self.assertEqual(account.balance_minor, 9874950)
+        self.assertEqual(account.balance_minor, 9864950)
 
 
 if __name__ == "__main__":
