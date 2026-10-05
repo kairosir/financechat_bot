@@ -5,6 +5,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    WebAppInfo,
 )
 
 
@@ -36,6 +37,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📊 Сводка"), KeyboardButton(text="🕘 История")],
             [KeyboardButton(text="💳 Счета"), KeyboardButton(text="⚙️ Категории")],
             [KeyboardButton(text="↩️ Удалить последнюю"), KeyboardButton(text="📱 iPhone")],
+            [KeyboardButton(text="🌐 Веб-приложение")],
             [KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
@@ -48,6 +50,19 @@ def iphone_setup_keyboard(url: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="⚡ Открыть быструю запись", url=url)],
             [InlineKeyboardButton(text="✕ Закрыть", callback_data="iphone_close")],
+        ]
+    )
+
+
+def web_app_keyboard(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Открыть Purpose Finance",
+                    web_app=WebAppInfo(url=url),
+                )
+            ]
         ]
     )
 

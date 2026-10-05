@@ -40,6 +40,7 @@ from keyboards import (
     note_keyboard,
     summary_keyboard,
     transfer_account_keyboard,
+    web_app_keyboard,
 )
 from shortcut_api import create_app
 
@@ -241,6 +242,18 @@ async def iphone_setup(message: Message) -> None:
         "После этого расходы и доходы можно записывать без открытия Telegram. "
         "Несколько последних ссылок остаются рабочими, поэтому готовая команда не сломается.",
         reply_markup=iphone_setup_keyboard(url),
+    )
+
+
+@router.message(Command("app"))
+@router.message(F.text == "🌐 Веб-приложение")
+async def open_web_app(message: Message) -> None:
+    if not public_base_url:
+        await message.answer("Веб-приложение ещё подключается.")
+        return
+    await message.answer(
+        "<b>Purpose Finance</b>\n\nБаланс, счета и история в одном окне.",
+        reply_markup=web_app_keyboard(public_base_url),
     )
 
 

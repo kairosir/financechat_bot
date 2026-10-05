@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#120b24">
+  <meta name="description" content="Purpose Finance — понятный учёт доходов и расходов">
+  <title>Purpose Finance</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Purpose Finance">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40"><path d="M8 12.5h21a5 5 0 0 1 5 5v11a5 5 0 0 1-5 5H10a6 6 0 0 1-6-6V12a6 6 0 0 1 6-6h18v6.5H8Z"/><path class="wallet-line" d="M27 19h8v8h-8a4 4 0 0 1 0-8Z"/><circle cx="28" cy="23" r="1.5"/></svg>
+        </span>
+        <span><strong>Purpose</strong><small>Finance</small></span>
+      </a>
+      <span class="status-pill"><i></i><span id="connectionLabel">Синхронизация</span></span>
+    </header>
+
+    <section id="loading" class="state-card"><span class="loader"></span><p>Загружаем ваши финансы…</p></section>
+    <section id="authError" class="state-card hidden">
+      <div class="state-icon">↗</div><h1>Откройте через Telegram</h1>
+      <p>Нажмите «🌐 Веб-приложение» в боте Purpose Finance — данные откроются безопасно и без пароля.</p>
+    </section>
+
+    <div id="dashboard" class="hidden">
+      <section class="balance-card">
+        <div class="balance-head"><span>Общий баланс</span><span class="period">этот месяц</span></div>
+        <h1 id="balance">0 ₸</h1>
+        <div class="balance-stats">
+          <div><span class="stat-icon income">↗</span><p>Доходы</p><strong id="income">0 ₸</strong></div>
+          <div><span class="stat-icon expense">↘</span><p>Расходы</p><strong id="expense">0 ₸</strong></div>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-title"><div><span class="eyebrow">Счета</span><h2>Где лежат деньги</h2></div><button id="newAccount" class="text-button">+ Счёт</button></div>
+        <div id="accounts" class="accounts-grid"></div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-title"><div><span class="eyebrow">Структура</span><h2>Основные расходы</h2></div></div>
+        <div id="topCategories" class="category-chart"></div>
+      </section>
+
+      <section class="section-block history-block">
+        <div class="section-title"><div><span class="eyebrow">История</span><h2>Последние операции</h2></div></div>
+        <div id="history" class="history-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <button id="addTransaction" class="fab hidden"><span>＋</span> Новая операция</button>
+
+  <div id="drawerBackdrop" class="backdrop hidden"></div>
+  <aside id="transactionDrawer" class="drawer" aria-hidden="true">
+    <div class="drawer-handle"></div>
+    <div class="drawer-head"><div><span class="eyebrow">Быстрая запись</span><h2>Новая операция</h2></div><button id="closeDrawer" class="icon-button">×</button></div>
+    <div class="kind-switch"><button data-kind="expense" class="active">− Расход</button><button data-kind="income">+ Доход</button></div>
+    <form id="transactionForm">
+      <label>Сумма, ₸<input id="amountInput" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
+      <label>Категория<select id="categorySelect" required></select></label>
+      <button id="newCategory" type="button" class="subtle-button">＋ Своя категория</button>
+      <label>Счёт<select id="accountSelect" required></select></label>
+      <label>Комментарий <small>необязательно</small><input id="noteInput" maxlength="120" placeholder="Куда, откуда или зачем"></label>
+      <button id="saveTransaction" class="primary-button" type="submit">Сохранить операцию</button>
+      <p id="formStatus" class="form-status"></p>
+    </form>
+  </aside>
+
+  <dialog id="smallDialog">
+    <form method="dialog" id="smallDialogForm">
+      <div class="dialog-head"><h3 id="dialogTitle">Добавить</h3><button value="cancel" class="icon-button">×</button></div>
+      <label id="dialogNameLabel">Название<input id="dialogName" autocomplete="off" required></label>
+      <label id="dialogBalanceLabel">Текущий остаток, ₸<input id="dialogBalance" inputmode="decimal" value="0"></label>
+      <button id="dialogSubmit" value="default" class="primary-button">Сохранить</button>
+      <p id="dialogStatus" class="form-status"></p>
+    </form>
+  </dialog>
+</body>
+</html>

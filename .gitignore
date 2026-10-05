@@ -1,7 +1,10 @@
 .env
+.env.local
+.neon
+.vercel
 .venv/
 __pycache__/
 *.py[cod]
 data/*.db
 data/*.db-*
-
+.env*

@@ -7,6 +7,31 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+try:
+    from psycopg import IntegrityError as PostgresIntegrityError
+except ImportError:  # Railway's SQLite deployment does not need psycopg.
+    class PostgresIntegrityError(Exception):
+        pass
+
+
+class _Connection:
+    def __init__(self, raw: Any, postgres: bool) -> None:
+        self.raw = raw
+        self.postgres = postgres
+
+    def __enter__(self) -> "_Connection":
+        self.raw.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> object:
+        return self.raw.__exit__(*args)
+
+    def execute(self, query: str, params: object = ()) -> Any:
+        if self.postgres:
+            query = query.replace("?", "%s")
+        return self.raw.execute(query, params)
 
 
 @dataclass(frozen=True)
@@ -53,18 +78,37 @@ class AccountTransfer:
 
 class Database:
     def __init__(self, path: str) -> None:
-        self.path = Path(path)
+        self.postgres = path.startswith(("postgres://", "postgresql://"))
+        self.path = path if self.postgres else Path(path)
 
     async def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.postgres:
+            assert isinstance(self.path, Path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._initialize_sync)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> _Connection:
+        if self.postgres:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            return _Connection(
+                psycopg.connect(str(self.path), row_factory=dict_row),
+                postgres=True,
+            )
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
-        return connection
+        return _Connection(connection, postgres=False)
+
+    def _inserted_id(self, cursor: Any) -> int:
+        if self.postgres:
+            return int(cursor.fetchone()["id"])
+        return int(cursor.lastrowid)
 
     def _initialize_sync(self) -> None:
+        if self.postgres:
+            self._initialize_postgres_sync()
+            return
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
@@ -175,6 +219,76 @@ class Database:
                 """
             )
 
+    def _initialize_postgres_sync(self) -> None:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                name TEXT NOT NULL,
+                balance_minor BIGINT NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, name)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id, id)",
+            """
+            CREATE TABLE IF NOT EXISTS transactions (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('expense', 'income')),
+                category TEXT NOT NULL,
+                amount_minor BIGINT NOT NULL CHECK(amount_minor > 0),
+                note TEXT,
+                created_at TEXT NOT NULL,
+                account_id BIGINT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id, created_at DESC)",
+            """
+            CREATE TABLE IF NOT EXISTS custom_categories (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('expense', 'income')),
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, kind, name)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_custom_categories_user_kind ON custom_categories(user_id, kind, id)",
+            """
+            CREATE TABLE IF NOT EXISTS account_transfers (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                from_account_id BIGINT NOT NULL,
+                to_account_id BIGINT NOT NULL,
+                amount_minor BIGINT NOT NULL CHECK(amount_minor > 0),
+                note TEXT,
+                created_at TEXT NOT NULL,
+                CHECK(from_account_id != to_account_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS shortcut_access (
+                user_id BIGINT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS shortcut_access_history (
+                token_hash TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_shortcut_access_history_user ON shortcut_access_history(user_id, created_at DESC)",
+        ]
+        with self._connect() as connection:
+            for statement in statements:
+                connection.execute(statement)
+
     async def add_transaction(
         self,
         user_id: int,
@@ -224,10 +338,11 @@ class Database:
                 INSERT INTO transactions
                     (user_id, kind, category, amount_minor, note, created_at, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                """ + (" RETURNING id" if self.postgres else "") + """
                 """,
                 (user_id, kind, category, amount_minor, note, created_at, account_id),
             )
-            return int(cursor.lastrowid)
+            return self._inserted_id(cursor)
 
     async def recent(
         self,
@@ -316,11 +431,12 @@ class Database:
                     """
                     INSERT INTO custom_categories (user_id, kind, name, created_at)
                     VALUES (?, ?, ?, ?)
+                    """ + (" RETURNING id" if self.postgres else "") + """
                     """,
                     (user_id, kind, name, created_at),
                 )
-                item_id = int(cursor.lastrowid)
-        except sqlite3.IntegrityError:
+                item_id = self._inserted_id(cursor)
+        except (sqlite3.IntegrityError, PostgresIntegrityError):
             return None
         return CustomCategory(item_id, user_id, kind, name, created_at)
 
@@ -387,10 +503,11 @@ class Database:
                     """
                     INSERT INTO accounts (user_id, name, balance_minor, created_at)
                     VALUES (?, 'Основной', 0, ?)
+                    """ + (" RETURNING id" if self.postgres else "") + """
                     """,
                     (user_id, created_at),
                 )
-                return Account(int(cursor.lastrowid), user_id, "Основной", 0, created_at)
+                return Account(self._inserted_id(cursor), user_id, "Основной", 0, created_at)
         return Account(**dict(row))
 
     async def accounts(self, user_id: int) -> list[Account]:
@@ -449,11 +566,12 @@ class Database:
                     """
                     INSERT INTO accounts (user_id, name, balance_minor, created_at)
                     VALUES (?, ?, ?, ?)
+                    """ + (" RETURNING id" if self.postgres else "") + """
                     """,
                     (user_id, name, balance_minor, created_at),
                 )
-                account_id = int(cursor.lastrowid)
-        except sqlite3.IntegrityError:
+                account_id = self._inserted_id(cursor)
+        except (sqlite3.IntegrityError, PostgresIntegrityError):
             return None
         return Account(account_id, user_id, name, balance_minor, created_at)
 
@@ -515,7 +633,7 @@ class Database:
                     (name, account_id, user_id),
                 )
                 return cursor.rowcount == 1
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, PostgresIntegrityError):
             return False
 
     async def transfer(
@@ -568,6 +686,7 @@ class Database:
                 INSERT INTO account_transfers
                     (user_id, from_account_id, to_account_id, amount_minor, note, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
+                """ + (" RETURNING id" if self.postgres else "") + """
                 """,
                 (
                     user_id,
@@ -578,7 +697,7 @@ class Database:
                     created_at,
                 ),
             )
-            return int(cursor.lastrowid)
+            return self._inserted_id(cursor)
 
     async def totals(
         self,
@@ -690,9 +809,10 @@ class Database:
             if previous is not None:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO shortcut_access_history
+                    INSERT INTO shortcut_access_history
                         (token_hash, user_id, created_at)
                     VALUES (?, ?, ?)
+                    ON CONFLICT(token_hash) DO NOTHING
                     """,
                     (str(previous["token_hash"]), user_id, str(previous["created_at"])),
                 )
@@ -746,9 +866,12 @@ class Database:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR REPLACE INTO shortcut_access_history
+                INSERT INTO shortcut_access_history
                     (token_hash, user_id, created_at)
                 VALUES (?, ?, ?)
+                ON CONFLICT(token_hash) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    created_at = excluded.created_at
                 """,
                 (token_hash, user_id, created_at),
             )
