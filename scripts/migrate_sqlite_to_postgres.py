@@ -9,11 +9,11 @@ import psycopg
 
 TABLES = {
     "accounts": (
-        "id, user_id, name, balance_minor, created_at",
+        "id, user_id, name, balance_minor, created_at, account_type, currency, interest_rate_bps",
         "id",
     ),
     "transactions": (
-        "id, user_id, kind, category, amount_minor, note, created_at, account_id",
+        "id, user_id, kind, category, amount_minor, note, created_at, account_id, currency",
         "id",
     ),
     "custom_categories": (

@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -161,6 +161,38 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         updated_cash = await self.database.get_account(cash.id, 42)
         assert updated_cash is not None
         self.assertEqual(updated_cash.balance_minor, 150000)
+
+    async def test_currencies_deposits_and_history_period(self) -> None:
+        now = datetime(2026, 10, 6, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        deposit = await self.database.add_account(
+            42,
+            "Dollar deposit",
+            100000,
+            now,
+            account_type="deposit",
+            currency="USD",
+            interest_rate_bps=425,
+        )
+        card = await self.database.add_account(
+            42, "Kaspi", 500000, now, currency="KZT"
+        )
+        assert deposit is not None and card is not None
+        self.assertEqual((deposit.account_type, deposit.currency, deposit.interest_rate_bps), ("deposit", "USD", 425))
+
+        await self.database.add_transaction(
+            42, "income", "investment", 2500, None, now, account_id=deposit.id
+        )
+        await self.database.add_transaction(
+            42, "expense", "food", 10000, None, now - timedelta(days=10), account_id=card.id
+        )
+        recent = await self.database.recent(42, start_at=now - timedelta(days=1))
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0].currency, "USD")
+        totals = await self.database.totals_by_currency(42)
+        self.assertEqual(totals["USD"]["income"], 2500)
+        self.assertEqual(totals["KZT"]["expense"], 10000)
+        with self.assertRaisesRegex(ValueError, "одной валюте"):
+            await self.database.transfer(42, deposit.id, card.id, 100, None, now)
 
     async def test_shortcut_api_writes_to_shared_database(self) -> None:
         timezone = ZoneInfo("Asia/Almaty")

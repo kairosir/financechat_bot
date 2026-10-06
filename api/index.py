@@ -5,7 +5,7 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 import bot as bot_module
 from database import Database
 from keyboards import EXPENSE_CATEGORIES, INCOME_CATEGORIES, category_label, custom_label
+from updates import releases_payload
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -113,17 +114,63 @@ def parse_amount(value: object, allow_negative: bool = False) -> int | None:
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def money(amount_minor: int) -> str:
+def parse_interest_rate(value: object) -> int | None:
+    cleaned = str(value).strip().replace("%", "").replace(",", ".")
+    try:
+        rate = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    if not rate.is_finite() or rate < 0 or rate > 100:
+        return None
+    return int((rate * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def money(amount_minor: int, currency: str = "KZT") -> str:
     value = Decimal(amount_minor) / 100
+    symbol = {"KZT": "₸", "RUB": "₽", "USD": "$"}.get(currency, currency)
     if value == value.to_integral():
-        return f"{int(value):,}".replace(",", " ") + " ₸"
-    return f"{value:,.2f}".replace(",", " ") + " ₸"
+        return f"{int(value):,}".replace(",", " ") + f" {symbol}"
+    return f"{value:,.2f}".replace(",", " ") + f" {symbol}"
+
+
+def period_bounds(
+    period: str,
+    start: str | None,
+    end: str | None,
+) -> tuple[datetime | None, datetime | None, str]:
+    now = datetime.now(TIMEZONE)
+    if period == "day":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0), None, "Сегодня"
+    if period == "week":
+        first = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return first, None, "Эта неделя"
+    if period == "month":
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), None, "Этот месяц"
+    if period == "year":
+        return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0), None, "Этот год"
+    if period == "custom":
+        try:
+            first = datetime.strptime(start or "", "%Y-%m-%d").replace(tzinfo=TIMEZONE)
+            last = datetime.strptime(end or "", "%Y-%m-%d").replace(tzinfo=TIMEZONE)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Укажите обе даты периода") from exc
+        if last < first:
+            raise HTTPException(status_code=400, detail="Конец периода раньше начала")
+        return first, last + timedelta(days=1), f"{first:%d.%m.%Y} — {last:%d.%m.%Y}"
+    return None, None, "Всё время"
 
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
     await ensure_initialized()
     return {"ok": True, "service": "purpose-finance-vercel"}
+
+
+@app.get("/api/whats-new")
+async def whats_new() -> dict[str, object]:
+    return releases_payload()
 
 
 @app.post("/api/telegram")
@@ -142,37 +189,81 @@ async def telegram_webhook(
 
 
 @app.get("/api/dashboard")
-async def dashboard(request: Request) -> dict[str, object]:
+async def dashboard(
+    request: Request,
+    period: str = "month",
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, object]:
     user_id = await authorized_user(request)
     now = datetime.now(TIMEZONE)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    start_at, end_at, period_label = period_bounds(period, start, end)
     await db.ensure_default_account(user_id, now)
     account_items = await db.accounts(user_id)
-    income, expense, category_totals = await db.totals(user_id, month_start)
-    history = await db.recent(user_id, limit=30)
-    balance_minor = sum(item.balance_minor for item in account_items)
+    totals = await db.totals_by_currency(user_id, start_at, end_at)
+    history = await db.recent(user_id, limit=100, start_at=start_at, end_at=end_at)
+    balances: dict[str, int] = {}
+    for item in account_items:
+        balances[item.currency] = balances.get(item.currency, 0) + item.balance_minor
+    currencies = sorted(set(balances) | set(totals)) or ["KZT"]
+    primary = totals.get("KZT", {"income": 0, "expense": 0, "categories": []})
+    income = int(primary["income"])
+    expense = int(primary["expense"])
     return {
         "ok": True,
-        "balance_minor": balance_minor,
-        "balance": money(balance_minor),
+        "period": period,
+        "period_label": period_label,
+        "balance_minor": balances.get("KZT", 0),
+        "balance": money(balances.get("KZT", 0)),
         "income_minor": income,
         "income": money(income),
         "expense_minor": expense,
         "expense": money(expense),
+        "currency_totals": [
+            {
+                "currency": currency,
+                "balance": money(balances.get(currency, 0), currency),
+                "income": money(int(totals.get(currency, {}).get("income", 0)), currency),
+                "expense": money(int(totals.get(currency, {}).get("expense", 0)), currency),
+            }
+            for currency in currencies
+        ],
         "accounts": [
-            {"id": item.id, "name": item.name, "balance": money(item.balance_minor)}
+            {
+                "id": item.id,
+                "name": item.name,
+                "balance": money(item.balance_minor, item.currency),
+                "currency": item.currency,
+                "account_type": item.account_type,
+                "interest_rate": (
+                    f"{Decimal(item.interest_rate_bps) / 100:g}%"
+                    if item.interest_rate_bps is not None
+                    else None
+                ),
+            }
             for item in account_items
         ],
         "top_categories": [
-            {"label": category_label("expense", key), "amount": money(amount)}
-            for key, amount in category_totals
-        ],
+            {
+                "label": category_label("expense", key),
+                "amount": money(amount, currency),
+                "currency": currency,
+                "amount_minor": amount,
+            }
+            for currency in currencies
+            for key, amount in (
+                totals.get(currency, {}).get("categories", [])
+                if isinstance(totals.get(currency, {}).get("categories", []), list)
+                else []
+            )
+        ][:8],
         "history": [
             {
                 "id": item.id,
                 "kind": item.kind,
                 "category": category_label(item.kind, item.category),
-                "amount": money(item.amount_minor),
+                "amount": money(item.amount_minor, item.currency),
+                "currency": item.currency,
                 "note": item.note,
                 "account": item.account_name or "Основной",
                 "created_at": item.created_at,
@@ -199,7 +290,13 @@ async def options(request: Request, kind: str = "expense") -> dict[str, object]:
             for item in custom
         ],
         "accounts": [
-            {"id": item.id, "name": item.name, "balance": money(item.balance_minor)}
+            {
+                "id": item.id,
+                "name": item.name,
+                "balance": money(item.balance_minor, item.currency),
+                "currency": item.currency,
+                "account_type": item.account_type,
+            }
             for item in accounts
         ],
     }
@@ -245,7 +342,7 @@ async def create_transaction(request: Request) -> dict[str, object]:
         "id": transaction_id,
         "category": category_label(kind, category),
         "account": account.name,
-        "amount": money(amount_minor),
+        "amount": money(amount_minor, account.currency),
     }
 
 
@@ -261,10 +358,36 @@ async def create_account(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Введите корректный остаток")
     if len(await db.accounts(user_id)) >= 12:
         raise HTTPException(status_code=400, detail="Можно создать не более 12 счетов")
-    item = await db.add_account(user_id, name, balance_minor, datetime.now(TIMEZONE))
+    account_type = str(payload.get("account_type", "card"))
+    currency = str(payload.get("currency", "KZT"))
+    if account_type not in {"card", "deposit"}:
+        raise HTTPException(status_code=400, detail="Выберите тип счёта")
+    if currency not in {"KZT", "RUB", "USD"}:
+        raise HTTPException(status_code=400, detail="Выберите валюту")
+    interest_rate_bps: int | None = None
+    if account_type == "deposit":
+        interest_rate_bps = parse_interest_rate(payload.get("interest_rate", ""))
+        if interest_rate_bps is None:
+            raise HTTPException(status_code=400, detail="Ставка должна быть от 0 до 100%")
+    item = await db.add_account(
+        user_id,
+        name,
+        balance_minor,
+        datetime.now(TIMEZONE),
+        account_type=account_type,
+        currency=currency,
+        interest_rate_bps=interest_rate_bps,
+    )
     if item is None:
         raise HTTPException(status_code=409, detail="Такой счёт уже существует")
-    return {"ok": True, "id": item.id, "name": item.name, "balance": money(item.balance_minor)}
+    return {
+        "ok": True,
+        "id": item.id,
+        "name": item.name,
+        "balance": money(item.balance_minor, item.currency),
+        "currency": item.currency,
+        "account_type": item.account_type,
+    }
 
 
 @app.post("/api/categories")

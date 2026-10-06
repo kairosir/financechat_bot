@@ -45,6 +45,7 @@ class Transaction:
     created_at: str
     account_id: int | None = None
     account_name: str | None = None
+    currency: str = "KZT"
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,9 @@ class Account:
     name: str
     balance_minor: int
     created_at: str
+    account_type: str = "card"
+    currency: str = "KZT"
+    interest_rate_bps: int | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,22 @@ class Database:
                 )
                 """
             )
+            account_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(accounts)")
+            }
+            if "account_type" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'card'"
+                )
+            if "currency" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN currency TEXT NOT NULL DEFAULT 'KZT'"
+                )
+            if "interest_rate_bps" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN interest_rate_bps INTEGER"
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_accounts_user
@@ -149,6 +169,10 @@ class Database:
             if "account_id" not in transaction_columns:
                 connection.execute(
                     "ALTER TABLE transactions ADD COLUMN account_id INTEGER"
+                )
+            if "currency" not in transaction_columns:
+                connection.execute(
+                    "ALTER TABLE transactions ADD COLUMN currency TEXT NOT NULL DEFAULT 'KZT'"
                 )
             connection.execute(
                 """
@@ -232,6 +256,9 @@ class Database:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id, id)",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT 'card'",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'KZT'",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS interest_rate_bps INTEGER",
             """
             CREATE TABLE IF NOT EXISTS transactions (
                 id BIGSERIAL PRIMARY KEY,
@@ -246,6 +273,7 @@ class Database:
             """,
             "CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id, created_at DESC)",
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'KZT'",
             """
             CREATE TABLE IF NOT EXISTS custom_categories (
                 id BIGSERIAL PRIMARY KEY,
@@ -321,13 +349,15 @@ class Database:
         account_id: int | None,
     ) -> int:
         with self._connect() as connection:
+            currency = "KZT"
             if account_id is not None:
                 account = connection.execute(
-                    "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
+                    "SELECT id, currency FROM accounts WHERE id = ? AND user_id = ?",
                     (account_id, user_id),
                 ).fetchone()
                 if account is None:
                     raise ValueError("Счёт не найден")
+                currency = str(account["currency"])
                 delta = amount_minor if kind == "income" else -amount_minor
                 connection.execute(
                     "UPDATE accounts SET balance_minor = balance_minor + ? WHERE id = ?",
@@ -336,11 +366,11 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT INTO transactions
-                    (user_id, kind, category, amount_minor, note, created_at, account_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (user_id, kind, category, amount_minor, note, created_at, account_id, currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """ + (" RETURNING id" if self.postgres else "") + """
                 """,
-                (user_id, kind, category, amount_minor, note, created_at, account_id),
+                (user_id, kind, category, amount_minor, note, created_at, account_id, currency),
             )
             return self._inserted_id(cursor)
 
@@ -349,26 +379,39 @@ class Database:
         user_id: int,
         limit: int = 10,
         kind: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
     ) -> list[Transaction]:
-        return await asyncio.to_thread(self._recent_sync, user_id, limit, kind)
+        start = start_at.isoformat(timespec="seconds") if start_at else None
+        end = end_at.isoformat(timespec="seconds") if end_at else None
+        return await asyncio.to_thread(self._recent_sync, user_id, limit, kind, start, end)
 
     def _recent_sync(
         self,
         user_id: int,
         limit: int,
         kind: str | None,
+        start_at: str | None,
+        end_at: str | None,
     ) -> list[Transaction]:
         condition = "t.user_id = ?"
         params: list[object] = [user_id]
         if kind:
             condition += " AND t.kind = ?"
             params.append(kind)
+        if start_at:
+            condition += " AND t.created_at >= ?"
+            params.append(start_at)
+        if end_at:
+            condition += " AND t.created_at < ?"
+            params.append(end_at)
         params.append(limit)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT t.id, t.user_id, t.kind, t.category, t.amount_minor,
-                       t.note, t.created_at, t.account_id, a.name AS account_name
+                       t.note, t.created_at, t.account_id, a.name AS account_name,
+                       t.currency
                 FROM transactions AS t
                 LEFT JOIN accounts AS a ON a.id = t.account_id
                 WHERE {condition}
@@ -493,7 +536,8 @@ class Database:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, user_id, name, balance_minor, created_at
+                SELECT id, user_id, name, balance_minor, created_at,
+                       account_type, currency, interest_rate_bps
                 FROM accounts WHERE user_id = ? ORDER BY id LIMIT 1
                 """,
                 (user_id,),
@@ -501,8 +545,9 @@ class Database:
             if row is None:
                 cursor = connection.execute(
                     """
-                    INSERT INTO accounts (user_id, name, balance_minor, created_at)
-                    VALUES (?, 'Основной', 0, ?)
+                    INSERT INTO accounts
+                        (user_id, name, balance_minor, created_at, account_type, currency)
+                    VALUES (?, 'Основной', 0, ?, 'card', 'KZT')
                     """ + (" RETURNING id" if self.postgres else "") + """
                     """,
                     (user_id, created_at),
@@ -517,7 +562,8 @@ class Database:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, user_id, name, balance_minor, created_at
+                SELECT id, user_id, name, balance_minor, created_at,
+                       account_type, currency, interest_rate_bps
                 FROM accounts WHERE user_id = ? ORDER BY id
                 """,
                 (user_id,),
@@ -531,7 +577,8 @@ class Database:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, user_id, name, balance_minor, created_at
+                SELECT id, user_id, name, balance_minor, created_at,
+                       account_type, currency, interest_rate_bps
                 FROM accounts WHERE id = ? AND user_id = ?
                 """,
                 (account_id, user_id),
@@ -544,6 +591,9 @@ class Database:
         name: str,
         balance_minor: int,
         created_at: datetime,
+        account_type: str = "card",
+        currency: str = "KZT",
+        interest_rate_bps: int | None = None,
     ) -> Account | None:
         return await asyncio.to_thread(
             self._add_account_sync,
@@ -551,6 +601,9 @@ class Database:
             name,
             balance_minor,
             created_at.isoformat(timespec="seconds"),
+            account_type,
+            currency,
+            interest_rate_bps,
         )
 
     def _add_account_sync(
@@ -559,21 +612,34 @@ class Database:
         name: str,
         balance_minor: int,
         created_at: str,
+        account_type: str,
+        currency: str,
+        interest_rate_bps: int | None,
     ) -> Account | None:
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
                     """
-                    INSERT INTO accounts (user_id, name, balance_minor, created_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO accounts
+                        (user_id, name, balance_minor, created_at, account_type, currency, interest_rate_bps)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """ + (" RETURNING id" if self.postgres else "") + """
                     """,
-                    (user_id, name, balance_minor, created_at),
+                    (user_id, name, balance_minor, created_at, account_type, currency, interest_rate_bps),
                 )
                 account_id = self._inserted_id(cursor)
         except (sqlite3.IntegrityError, PostgresIntegrityError):
             return None
-        return Account(account_id, user_id, name, balance_minor, created_at)
+        return Account(
+            account_id,
+            user_id,
+            name,
+            balance_minor,
+            created_at,
+            account_type,
+            currency,
+            interest_rate_bps,
+        )
 
     async def set_account_balance(
         self,
@@ -668,11 +734,13 @@ class Database:
             raise ValueError("Выберите разные счета")
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id FROM accounts WHERE user_id = ? AND id IN (?, ?)",
+                "SELECT id, currency FROM accounts WHERE user_id = ? AND id IN (?, ?)",
                 (user_id, from_account_id, to_account_id),
             ).fetchall()
             if len(rows) != 2:
                 raise ValueError("Счёт не найден")
+            if len({str(row["currency"]) for row in rows}) != 1:
+                raise ValueError("Переводы доступны только между счетами в одной валюте")
             connection.execute(
                 "UPDATE accounts SET balance_minor = balance_minor - ? WHERE id = ?",
                 (amount_minor, from_account_id),
@@ -745,6 +813,72 @@ class Database:
             (str(row["category"]), int(row["total"])) for row in categories
         ]
         return by_kind.get("income", 0), by_kind.get("expense", 0), category_totals
+
+    async def totals_by_currency(
+        self,
+        user_id: int,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> dict[str, dict[str, object]]:
+        start = start_at.isoformat(timespec="seconds") if start_at else None
+        end = end_at.isoformat(timespec="seconds") if end_at else None
+        return await asyncio.to_thread(
+            self._totals_by_currency_sync,
+            user_id,
+            start,
+            end,
+        )
+
+    def _totals_by_currency_sync(
+        self,
+        user_id: int,
+        start_at: str | None,
+        end_at: str | None,
+    ) -> dict[str, dict[str, object]]:
+        condition = "user_id = ?"
+        params: list[object] = [user_id]
+        if start_at:
+            condition += " AND created_at >= ?"
+            params.append(start_at)
+        if end_at:
+            condition += " AND created_at < ?"
+            params.append(end_at)
+        with self._connect() as connection:
+            totals = connection.execute(
+                f"""
+                SELECT currency, kind, COALESCE(SUM(amount_minor), 0) AS total
+                FROM transactions
+                WHERE {condition}
+                GROUP BY currency, kind
+                """,
+                params,
+            ).fetchall()
+            categories = connection.execute(
+                f"""
+                SELECT currency, category, SUM(amount_minor) AS total
+                FROM transactions
+                WHERE {condition} AND kind = 'expense'
+                GROUP BY currency, category
+                ORDER BY currency, total DESC
+                """,
+                params,
+            ).fetchall()
+        result: dict[str, dict[str, object]] = {}
+        for row in totals:
+            currency = str(row["currency"])
+            result.setdefault(currency, {"income": 0, "expense": 0, "categories": []})
+            result[currency][str(row["kind"])] = int(row["total"])
+        for row in categories:
+            currency = str(row["currency"])
+            bucket = result.setdefault(
+                currency,
+                {"income": 0, "expense": 0, "categories": []},
+            )
+            category_items = bucket["categories"]
+            assert isinstance(category_items, list)
+            if len(category_items) < 5:
+                category_items.append((str(row["category"]), int(row["total"])))
+        return result
 
     async def last(self, user_id: int) -> Transaction | None:
         items = await self.recent(user_id, limit=1)

@@ -38,7 +38,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="💳 Счета"), KeyboardButton(text="⚙️ Категории")],
             [KeyboardButton(text="↩️ Удалить последнюю"), KeyboardButton(text="📱 iPhone")],
             [KeyboardButton(text="🌐 Веб-приложение")],
-            [KeyboardButton(text="ℹ️ Помощь")],
+            [KeyboardButton(text="✨ Что нового?"), KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие",
@@ -59,7 +59,7 @@ def web_app_keyboard(url: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Открыть Purpose Finance",
+                    text="Открыть приложение",
                     web_app=WebAppInfo(url=url),
                 )
             ]
@@ -193,17 +193,58 @@ def summary_keyboard(active: str = "month") -> InlineKeyboardMarkup:
     )
 
 
-def history_keyboard(active: str = "all") -> InlineKeyboardMarkup:
-    labels = {"all": "Все", "expense": "Расходы", "income": "Доходы"}
+def history_keyboard(active: str = "month") -> InlineKeyboardMarkup:
+    labels = {
+        "day": "День",
+        "week": "Неделя",
+        "month": "Месяц",
+        "year": "Год",
+    }
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=("• " if key == active else "") + label,
-                    callback_data=f"history:{key}",
+                    callback_data=f"history_period:{key}",
                 )
                 for key, label in labels.items()
-            ]
+            ][:2],
+            [
+                InlineKeyboardButton(
+                    text=("• " if key == active else "") + label,
+                    callback_data=f"history_period:{key}",
+                )
+                for key, label in list(labels.items())[2:]
+            ],
+            [
+                InlineKeyboardButton(text="Выбрать даты", callback_data="history_period:custom"),
+                InlineKeyboardButton(text="Всё время", callback_data="history_period:all"),
+            ],
+        ]
+    )
+
+
+def account_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💳 Карта", callback_data="account_type:card"),
+                InlineKeyboardButton(text="🏦 Депозит", callback_data="account_type:deposit"),
+            ],
+            [InlineKeyboardButton(text="‹ К счетам", callback_data="accounts:back")],
+        ]
+    )
+
+
+def currency_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="₸ Тенге", callback_data="account_currency:KZT"),
+                InlineKeyboardButton(text="₽ Рубль", callback_data="account_currency:RUB"),
+                InlineKeyboardButton(text="$ Доллар", callback_data="account_currency:USD"),
+            ],
+            [InlineKeyboardButton(text="‹ К счетам", callback_data="accounts:back")],
         ]
     )
 

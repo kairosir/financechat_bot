@@ -31,13 +31,18 @@
 
     <div id="dashboard" class="hidden">
       <section class="balance-card">
-        <div class="balance-head"><span>Общий баланс</span><span class="period">этот месяц</span></div>
+        <div class="balance-head"><span>Баланс по валютам</span><span id="periodLabel" class="period">этот месяц</span></div>
         <h1 id="balance">0 ₸</h1>
+        <div id="currencyTotals" class="currency-totals"></div>
         <div class="balance-stats">
           <div><span class="stat-icon income">↗</span><p>Доходы</p><strong id="income">0 ₸</strong></div>
           <div><span class="stat-icon expense">↘</span><p>Расходы</p><strong id="expense">0 ₸</strong></div>
         </div>
       </section>
+
+      <div class="dashboard-actions">
+        <button id="whatsNewButton" class="updates-button">✨ Что нового?</button>
+      </div>
 
       <section class="section-block">
         <div class="section-title"><div><span class="eyebrow">Счета</span><h2>Где лежат деньги</h2></div><button id="newAccount" class="text-button">+ Счёт</button></div>
@@ -50,7 +55,17 @@
       </section>
 
       <section class="section-block history-block">
-        <div class="section-title"><div><span class="eyebrow">История</span><h2>Последние операции</h2></div></div>
+        <div class="section-title"><div><span class="eyebrow">История</span><h2 id="historyTitle">Этот месяц</h2></div></div>
+        <div class="period-tabs" id="periodTabs">
+          <button data-period="day">День</button><button data-period="week">Неделя</button>
+          <button data-period="month" class="active">Месяц</button><button data-period="year">Год</button>
+          <button data-period="custom">Даты</button>
+        </div>
+        <div id="customPeriod" class="custom-period hidden">
+          <label>С<input id="periodStart" type="date"></label>
+          <label>По<input id="periodEnd" type="date"></label>
+          <button id="applyPeriod" class="text-button">Показать</button>
+        </div>
         <div id="history" class="history-list"></div>
       </section>
     </div>
@@ -76,12 +91,20 @@
 
   <dialog id="smallDialog">
     <form method="dialog" id="smallDialogForm">
-      <div class="dialog-head"><h3 id="dialogTitle">Добавить</h3><button value="cancel" class="icon-button">×</button></div>
+      <div class="dialog-head"><h3 id="dialogTitle">Добавить</h3><button id="closeSmallDialog" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
       <label id="dialogNameLabel">Название<input id="dialogName" autocomplete="off" required></label>
+      <label id="dialogTypeLabel">Тип счёта<select id="dialogType"><option value="card">💳 Карта</option><option value="deposit">🏦 Депозит</option></select></label>
+      <label id="dialogCurrencyLabel">Валюта<select id="dialogCurrency"><option value="KZT">₸ Тенге</option><option value="RUB">₽ Рубль</option><option value="USD">$ Доллар</option></select></label>
       <label id="dialogBalanceLabel">Текущий остаток, ₸<input id="dialogBalance" inputmode="decimal" value="0"></label>
+      <label id="dialogInterestLabel" class="hidden">Годовая ставка, %<input id="dialogInterest" inputmode="decimal" placeholder="15,5"></label>
       <button id="dialogSubmit" value="default" class="primary-button">Сохранить</button>
       <p id="dialogStatus" class="form-status"></p>
     </form>
+  </dialog>
+
+  <dialog id="updatesDialog" class="updates-dialog">
+    <div class="dialog-head"><div><span class="eyebrow">Purpose Finance</span><h3>Что нового?</h3></div><button id="closeUpdates" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
+    <div id="updatesList" class="updates-list"><div class="empty">Загружаем обновления…</div></div>
   </dialog>
 </body>
 </html>

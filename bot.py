@@ -4,7 +4,7 @@ import asyncio
 import html
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,6 +23,7 @@ from database import Database, Transaction
 from keyboards import (
     account_keyboard,
     account_manage_keyboard,
+    account_type_keyboard,
     accounts_manage_keyboard,
     add_kind_keyboard,
     amount_keyboard,
@@ -32,6 +33,7 @@ from keyboards import (
     confirm_category_delete_keyboard,
     confirm_undo_keyboard,
     custom_label,
+    currency_keyboard,
     history_keyboard,
     iphone_setup_keyboard,
     main_keyboard,
@@ -43,6 +45,7 @@ from keyboards import (
     web_app_keyboard,
 )
 from shortcut_api import create_app
+from updates import releases_html
 
 
 router = Router()
@@ -64,13 +67,21 @@ class ManageCategory(StatesGroup):
 
 
 class ManageAccount(StatesGroup):
+    choosing_type = State()
+    choosing_currency = State()
     entering_name = State()
     entering_balance = State()
+    entering_interest = State()
     renaming = State()
     editing_balance = State()
     choosing_transfer_from = State()
     choosing_transfer_to = State()
     entering_transfer_amount = State()
+
+
+class HistoryRange(StatesGroup):
+    entering_start = State()
+    entering_end = State()
 
 
 def parse_amount(value: str) -> int | None:
@@ -96,11 +107,30 @@ def parse_balance(value: str) -> int | None:
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def format_money(amount_minor: int) -> str:
+def parse_interest_rate(value: str) -> int | None:
+    cleaned = value.strip().replace("%", "").replace(",", ".")
+    try:
+        rate = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    if not rate.is_finite() or rate < 0 or rate > 100:
+        return None
+    return int((rate * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def format_interest_rate(rate_bps: int | None) -> str:
+    if rate_bps is None:
+        return ""
+    value = Decimal(rate_bps) / 100
+    return f"{value.normalize()}% годовых"
+
+
+def format_money(amount_minor: int, currency: str = "KZT") -> str:
     value = Decimal(amount_minor) / 100
+    symbol = {"KZT": "₸", "RUB": "₽", "USD": "$"}.get(currency, currency)
     if value == value.to_integral():
-        return f"{int(value):,}".replace(",", " ") + " ₸"
-    return f"{value:,.2f}".replace(",", " ") + " ₸"
+        return f"{int(value):,}".replace(",", " ") + f" {symbol}"
+    return f"{value:,.2f}".replace(",", " ") + f" {symbol}"
 
 
 def format_transaction(item: Transaction) -> str:
@@ -109,7 +139,7 @@ def format_transaction(item: Transaction) -> str:
     date = datetime.fromisoformat(item.created_at).strftime("%d.%m · %H:%M")
     note = f"\n<i>{html.escape(item.note)}</i>" if item.note else ""
     account = f" · 💳 {html.escape(item.account_name)}" if item.account_name else ""
-    return f"{date}  {label}{account}\n<b>{sign}{format_money(item.amount_minor)}</b>{note}"
+    return f"{date}  {label}{account}\n<b>{sign}{format_money(item.amount_minor, item.currency)}</b>{note}"
 
 
 def normalize_category_name(value: str) -> str | None:
@@ -133,7 +163,10 @@ async def get_custom_pairs(user_id: int, kind: str) -> list[tuple[int, str]]:
 
 async def get_account_pairs(user_id: int) -> list[tuple[int, str, int]]:
     items = await db.accounts(user_id)
-    return [(item.id, item.name, item.balance_minor) for item in items]
+    return [
+        (item.id, f"{item.name} · {item.currency}", item.balance_minor)
+        for item in items
+    ]
 
 
 async def start_transaction(message: Message, state: FSMContext, kind: str) -> None:
@@ -179,6 +212,7 @@ async def edit_amount_step(message: Message, state: FSMContext) -> None:
     await message.edit_text(
         "<b>3 из 4 · Сумма</b>\n\n"
         f"{html.escape(category_label(kind, category))}\n"
+        f"Валюта: <b>{html.escape(str(data.get('account_currency', 'KZT')))}</b>\n"
         "Выберите или введите сумму:",
         reply_markup=amount_keyboard(),
     )
@@ -189,7 +223,7 @@ async def edit_note_step(message: Message, state: FSMContext) -> None:
     await state.set_state(AddTransaction.entering_note)
     await message.edit_text(
         "<b>4 из 4 · Комментарий</b>\n\n"
-        f"Сумма: <b>{format_money(int(data['amount_minor']))}</b>\n"
+        f"Сумма: <b>{format_money(int(data['amount_minor']), str(data.get('account_currency', 'KZT')))}</b>\n"
         "Напишите комментарий или сохраните без него:",
         reply_markup=note_keyboard(),
     )
@@ -218,6 +252,7 @@ async def command_help(message: Message) -> None:
         "🕘 <b>История</b> — последние операции с фильтром.\n"
         "💳 <b>Счета</b> — остатки, новые счета и переводы между ними.\n"
         "⚙️ <b>Категории</b> — свои направления доходов и расходов.\n"
+        "✨ <b>Что нового?</b> — последние обновления бота.\n"
         "↩️ <b>Удалить последнюю</b> — исправить ошибочную запись.\n\n"
         "Во время добавления используйте кнопки «Назад» и «Отмена». Комментарий необязателен.",
         reply_markup=main_keyboard(),
@@ -255,6 +290,12 @@ async def open_web_app(message: Message) -> None:
         "<b>Purpose Finance</b>\n\nБаланс, счета и история в одном окне.",
         reply_markup=web_app_keyboard(public_base_url),
     )
+
+
+@router.message(Command("new"))
+@router.message(F.text == "✨ Что нового?")
+async def whats_new(message: Message) -> None:
+    await message.answer(releases_html(), reply_markup=main_keyboard())
 
 
 @router.callback_query(F.data == "iphone_close")
@@ -380,7 +421,11 @@ async def choose_account(callback: CallbackQuery, state: FSMContext) -> None:
     if account is None:
         await callback.answer("Счёт не найден", show_alert=True)
         return
-    await state.update_data(account_id=account.id, account_name=account.name)
+    await state.update_data(
+        account_id=account.id,
+        account_name=account.name,
+        account_currency=account.currency,
+    )
     await callback.answer()
     if callback.message:
         await edit_amount_step(callback.message, state)
@@ -420,10 +465,11 @@ async def enter_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Не получилось распознать сумму. Введите число больше нуля:")
         return
     await state.update_data(amount_minor=amount_minor)
+    data = await state.get_data()
     await state.set_state(AddTransaction.entering_note)
     await message.answer(
         "<b>4 из 4 · Комментарий</b>\n\n"
-        f"Сумма: <b>{format_money(amount_minor)}</b>\n"
+        f"Сумма: <b>{format_money(amount_minor, str(data.get('account_currency', 'KZT')))}</b>\n"
         "Напишите комментарий или сохраните без него:",
         reply_markup=note_keyboard(),
     )
@@ -451,6 +497,7 @@ async def save_transaction(
     category = str(data["category"])
     account_id = int(data["account_id"])
     account_name = str(data["account_name"])
+    currency = str(data.get("account_currency", "KZT"))
     amount_minor = int(data["amount_minor"])
     now = datetime.now(timezone)
     await db.add_transaction(
@@ -470,7 +517,7 @@ async def save_transaction(
         f"✅ <b>{verb}</b>\n\n"
         f"{html.escape(category_label(kind, category))}\n"
         f"💳 {html.escape(account_name)}\n"
-        f"<b>{sign}{format_money(amount_minor)}</b>{note_line}\n"
+        f"<b>{sign}{format_money(amount_minor, currency)}</b>{note_line}\n"
         f"{now.strftime('%d.%m.%Y · %H:%M')}",
         reply_markup=main_keyboard(),
     )
@@ -496,15 +543,45 @@ async def skip_note(callback: CallbackQuery, state: FSMContext) -> None:
         await save_transaction(callback.message, state, None, callback.from_user.id)
 
 
-async def send_history(message: Message, kind: str = "all", edit: bool = False) -> None:
-    filter_kind = kind if kind in {"expense", "income"} else None
-    items = await db.recent(message.chat.id, limit=10, kind=filter_kind)
-    titles = {"all": "Последние операции", "expense": "Последние расходы", "income": "Последние доходы"}
-    if items:
-        text = f"<b>{titles[kind]}</b>\n\n" + "\n\n".join(format_transaction(item) for item in items)
+def history_period_bounds(period: str) -> tuple[datetime | None, datetime | None, str]:
+    now = datetime.now(timezone)
+    if period == "day":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0), None, "Сегодня"
+    if period == "week":
+        start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return start, None, "Эта неделя"
+    if period == "month":
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), None, "Этот месяц"
+    if period == "year":
+        return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0), None, "Этот год"
+    return None, None, "Всё время"
+
+
+async def send_history(
+    message: Message,
+    period: str = "month",
+    edit: bool = False,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    custom_title: str | None = None,
+) -> None:
+    if start_at is None and custom_title is None:
+        start_at, end_at, title = history_period_bounds(period)
     else:
-        text = f"<b>{titles[kind]}</b>\n\nЗдесь пока нет операций."
-    markup = history_keyboard(kind)
+        title = custom_title or "Выбранный период"
+    items = await db.recent(
+        message.chat.id,
+        limit=100,
+        start_at=start_at,
+        end_at=end_at,
+    )
+    if items:
+        text = f"<b>🕘 {title}</b>\n\n" + "\n\n".join(format_transaction(item) for item in items)
+    else:
+        text = f"<b>🕘 {title}</b>\n\nЗа этот период операций нет."
+    markup = history_keyboard(period)
     if edit:
         await message.edit_text(text, reply_markup=markup)
     else:
@@ -513,15 +590,68 @@ async def send_history(message: Message, kind: str = "all", edit: bool = False) 
 
 @router.message(F.text == "🕘 История")
 async def history(message: Message) -> None:
-    await send_history(message)
+    await send_history(message, "month")
 
 
-@router.callback_query(F.data.startswith("history:"))
-async def switch_history(callback: CallbackQuery) -> None:
-    kind = callback.data.split(":", maxsplit=1)[1]
+@router.callback_query(F.data.startswith("history_period:"))
+async def switch_history(callback: CallbackQuery, state: FSMContext) -> None:
+    period = callback.data.split(":", maxsplit=1)[1]
     await callback.answer()
+    if period == "custom":
+        await state.set_state(HistoryRange.entering_start)
+        if callback.message:
+            await callback.message.edit_text(
+                "<b>Начало периода</b>\n\nВведите дату в формате <b>ДД.ММ.ГГГГ</b>:",
+                reply_markup=back_cancel_keyboard("history_period:month"),
+            )
+        return
+    await state.clear()
     if callback.message:
-        await send_history(callback.message, kind, edit=True)
+        await send_history(callback.message, period, edit=True)
+
+
+def parse_history_date(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(value.strip(), "%d.%m.%Y").replace(tzinfo=timezone)
+    except ValueError:
+        return None
+
+
+@router.message(HistoryRange.entering_start)
+async def history_custom_start(message: Message, state: FSMContext) -> None:
+    start = parse_history_date(message.text or "")
+    if start is None:
+        await message.answer("Введите дату в формате ДД.ММ.ГГГГ, например 01.10.2026.")
+        return
+    await state.update_data(history_start=start.isoformat())
+    await state.set_state(HistoryRange.entering_end)
+    await message.answer(
+        "<b>Конец периода</b>\n\nВведите последнюю дату в формате <b>ДД.ММ.ГГГГ</b>:",
+        reply_markup=back_cancel_keyboard("history_period:month"),
+    )
+
+
+@router.message(HistoryRange.entering_end)
+async def history_custom_end(message: Message, state: FSMContext) -> None:
+    end_date = parse_history_date(message.text or "")
+    data = await state.get_data()
+    start = datetime.fromisoformat(str(data.get("history_start", "")))
+    if end_date is None:
+        await message.answer("Введите дату в формате ДД.ММ.ГГГГ, например 06.10.2026.")
+        return
+    if end_date < start:
+        await message.answer("Конец периода не может быть раньше начала.")
+        return
+    await state.clear()
+    inclusive_end = end_date + timedelta(days=1)
+    title = f"{start:%d.%m.%Y} — {end_date:%d.%m.%Y}"
+    await send_history(
+        message,
+        "custom",
+        start_at=start,
+        end_at=inclusive_end,
+        custom_title=title,
+    )
 
 
 def period_start(period: str) -> tuple[datetime | None, str]:
@@ -535,25 +665,36 @@ def period_start(period: str) -> tuple[datetime | None, str]:
 
 async def send_summary(message: Message, period: str, edit: bool = False) -> None:
     start, title = period_start(period)
-    income_total, expense_total, categories = await db.totals(message.chat.id, start)
-    balance = income_total - expense_total
+    totals = await db.totals_by_currency(message.chat.id, start)
     accounts = await db.accounts(message.chat.id)
-    accounts_total = sum(item.balance_minor for item in accounts)
-    sign = "+" if balance > 0 else ("−" if balance < 0 else "")
-    lines = [
-        f"<b>📊 {title}</b>",
-        "",
-        f"Доходы      <b>+{format_money(income_total)}</b>",
-        f"Расходы     <b>−{format_money(expense_total)}</b>",
-        f"Баланс       <b>{sign}{format_money(abs(balance))}</b>",
-        f"На счетах   <b>{format_money(accounts_total)}</b>",
-    ]
-    if categories:
-        lines.extend(["", "<b>Основные расходы</b>"])
-        for category, total in categories:
-            percent = round(total / expense_total * 100) if expense_total else 0
-            label = html.escape(category_label("expense", category))
-            lines.append(f"{label} — {format_money(total)} · {percent}%")
+    account_totals: dict[str, int] = {}
+    for account in accounts:
+        account_totals[account.currency] = account_totals.get(account.currency, 0) + account.balance_minor
+    currencies = sorted(set(totals) | set(account_totals)) or ["KZT"]
+    lines = [f"<b>📊 {title}</b>"]
+    for currency in currencies:
+        bucket = totals.get(currency, {"income": 0, "expense": 0, "categories": []})
+        income_total = int(bucket["income"])
+        expense_total = int(bucket["expense"])
+        balance = income_total - expense_total
+        sign = "+" if balance > 0 else ("−" if balance < 0 else "")
+        lines.extend(
+            [
+                "",
+                f"<b>{currency}</b>",
+                f"Доходы      <b>+{format_money(income_total, currency)}</b>",
+                f"Расходы     <b>−{format_money(expense_total, currency)}</b>",
+                f"Баланс       <b>{sign}{format_money(abs(balance), currency)}</b>",
+                f"На счетах   <b>{format_money(account_totals.get(currency, 0), currency)}</b>",
+            ]
+        )
+        categories = bucket["categories"]
+        if isinstance(categories, list) and categories:
+            lines.append("<b>Основные расходы</b>")
+            for category, total in categories[:3]:
+                percent = round(total / expense_total * 100) if expense_total else 0
+                label = html.escape(category_label("expense", category))
+                lines.append(f"{label} — {format_money(total, currency)} · {percent}%")
     text = "\n".join(lines)
     markup = summary_keyboard(period)
     if edit:
@@ -688,13 +829,19 @@ async def show_accounts_panel(
 ) -> None:
     await db.ensure_default_account(user_id, datetime.now(timezone))
     accounts = await db.accounts(user_id)
-    total = sum(item.balance_minor for item in accounts)
     lines = ["<b>💳 Ваши счета</b>", ""]
-    lines.extend(
-        f"<b>{html.escape(item.name)}</b> — {format_money(item.balance_minor)}"
-        for item in accounts
-    )
-    lines.extend(["", f"Всего на счетах: <b>{format_money(total)}</b>"])
+    for item in accounts:
+        icon = "🏦" if item.account_type == "deposit" else "💳"
+        rate = f" · {format_interest_rate(item.interest_rate_bps)}" if item.account_type == "deposit" else ""
+        lines.append(
+            f"{icon} <b>{html.escape(item.name)}</b> — "
+            f"{format_money(item.balance_minor, item.currency)}{rate}"
+        )
+    totals: dict[str, int] = {}
+    for item in accounts:
+        totals[item.currency] = totals.get(item.currency, 0) + item.balance_minor
+    lines.extend(["", "<b>Итого по валютам</b>"])
+    lines.extend(format_money(total, currency) for currency, total in sorted(totals.items()))
     pairs = [(item.id, item.name, item.balance_minor) for item in accounts]
     markup = accounts_manage_keyboard(pairs)
     if edit:
@@ -733,11 +880,43 @@ async def account_add_start(callback: CallbackQuery, state: FSMContext) -> None:
     if len(accounts) >= 12:
         await callback.answer("Можно создать не более 12 счетов", show_alert=True)
         return
+    await state.set_state(ManageAccount.choosing_type)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Новый счёт · тип</b>\n\nВыберите тип счёта:",
+            reply_markup=account_type_keyboard(),
+        )
+
+
+@router.callback_query(ManageAccount.choosing_type, F.data.startswith("account_type:"))
+async def account_add_type(callback: CallbackQuery, state: FSMContext) -> None:
+    account_type = callback.data.split(":", maxsplit=1)[1]
+    if account_type not in {"card", "deposit"}:
+        await callback.answer("Неизвестный тип", show_alert=True)
+        return
+    await state.update_data(account_type=account_type)
+    await state.set_state(ManageAccount.choosing_currency)
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Новый счёт · валюта</b>\n\nВыберите валюту счёта:",
+            reply_markup=currency_keyboard(),
+        )
+
+
+@router.callback_query(ManageAccount.choosing_currency, F.data.startswith("account_currency:"))
+async def account_add_currency(callback: CallbackQuery, state: FSMContext) -> None:
+    currency = callback.data.split(":", maxsplit=1)[1]
+    if currency not in {"KZT", "RUB", "USD"}:
+        await callback.answer("Неизвестная валюта", show_alert=True)
+        return
+    await state.update_data(account_currency=currency)
     await state.set_state(ManageAccount.entering_name)
     await callback.answer()
     if callback.message:
         await callback.message.edit_text(
-            "<b>Новый счёт</b>\n\nВведите название, например: <b>Kaspi</b>, <b>Наличные</b> или <b>Накопления</b>.",
+            "<b>Новый счёт · название</b>\n\nВведите название, например: <b>Kaspi</b>, <b>Наличные</b> или <b>Депозит</b>.",
             reply_markup=back_cancel_keyboard("accounts:back"),
         )
 
@@ -763,11 +942,32 @@ async def account_add_balance(message: Message, state: FSMContext) -> None:
         await message.answer("Введите корректный остаток, например: 250000 или -15000.")
         return
     data = await state.get_data()
+    if data.get("account_type") == "deposit":
+        await state.update_data(account_balance=balance_minor)
+        await state.set_state(ManageAccount.entering_interest)
+        await message.answer(
+            "<b>Ставка депозита</b>\n\nВведите годовую ставку как в приложении банка, например <b>15,5</b>.",
+            reply_markup=back_cancel_keyboard("accounts:back"),
+        )
+        return
+    await save_new_account(message, state, balance_minor, None)
+
+
+async def save_new_account(
+    message: Message,
+    state: FSMContext,
+    balance_minor: int,
+    interest_rate_bps: int | None,
+) -> None:
+    data = await state.get_data()
     item = await db.add_account(
         message.chat.id,
         str(data["account_name"]),
         balance_minor,
         datetime.now(timezone),
+        account_type=str(data.get("account_type", "card")),
+        currency=str(data.get("account_currency", "KZT")),
+        interest_rate_bps=interest_rate_bps,
     )
     if item is None:
         await state.set_state(ManageAccount.entering_name)
@@ -775,9 +975,20 @@ async def account_add_balance(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(
-        f"✅ Счёт <b>{html.escape(item.name)}</b> создан с остатком <b>{format_money(item.balance_minor)}</b>."
+        f"✅ Счёт <b>{html.escape(item.name)}</b> создан с остатком "
+        f"<b>{format_money(item.balance_minor, item.currency)}</b>."
     )
     await show_accounts_panel(message, message.chat.id)
+
+
+@router.message(ManageAccount.entering_interest)
+async def account_add_interest(message: Message, state: FSMContext) -> None:
+    rate_bps = parse_interest_rate(message.text or "")
+    if rate_bps is None:
+        await message.answer("Введите ставку от 0 до 100, например 15,5.")
+        return
+    data = await state.get_data()
+    await save_new_account(message, state, int(data["account_balance"]), rate_bps)
 
 
 @router.callback_query(F.data.startswith("account_manage:"))
@@ -789,8 +1000,14 @@ async def account_manage(callback: CallbackQuery) -> None:
         return
     await callback.answer()
     if callback.message:
+        icon = "🏦" if item.account_type == "deposit" else "💳"
+        details = "Депозит" if item.account_type == "deposit" else "Карта"
+        if item.account_type == "deposit":
+            details += f" · {format_interest_rate(item.interest_rate_bps)}"
         await callback.message.edit_text(
-            f"<b>💳 {html.escape(item.name)}</b>\n\nТекущий остаток: <b>{format_money(item.balance_minor)}</b>",
+            f"<b>{icon} {html.escape(item.name)}</b>\n\n"
+            f"{details} · {item.currency}\n"
+            f"Текущий остаток: <b>{format_money(item.balance_minor, item.currency)}</b>",
             reply_markup=account_manage_keyboard(item.id),
         )
 
@@ -803,7 +1020,7 @@ async def account_balance_start(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer("Счёт не найден", show_alert=True)
         return
     await state.set_state(ManageAccount.editing_balance)
-    await state.update_data(account_id=item.id, account_name=item.name)
+    await state.update_data(account_id=item.id, account_name=item.name, account_currency=item.currency)
     await callback.answer()
     if callback.message:
         await callback.message.edit_text(
@@ -866,7 +1083,8 @@ async def account_balance_save(message: Message, state: FSMContext) -> None:
         await message.answer("Счёт не найден.")
         return
     await message.answer(
-        f"✅ Остаток счёта <b>{html.escape(str(data['account_name']))}</b> обновлён: <b>{format_money(balance_minor)}</b>."
+        f"✅ Остаток счёта <b>{html.escape(str(data['account_name']))}</b> обновлён: "
+        f"<b>{format_money(balance_minor, str(data.get('account_currency', 'KZT')))}</b>."
     )
     await show_accounts_panel(message, message.chat.id)
 
@@ -896,7 +1114,11 @@ async def transfer_from(callback: CallbackQuery, state: FSMContext) -> None:
     if item is None:
         await callback.answer("Счёт не найден", show_alert=True)
         return
-    await state.update_data(from_account_id=item.id, from_account_name=item.name)
+    await state.update_data(
+        from_account_id=item.id,
+        from_account_name=item.name,
+        transfer_currency=item.currency,
+    )
     await state.set_state(ManageAccount.choosing_transfer_to)
     accounts = await get_account_pairs(callback.from_user.id)
     await callback.answer()
@@ -920,6 +1142,9 @@ async def transfer_to(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     if item.id == int(data["from_account_id"]):
         await callback.answer("Выберите другой счёт", show_alert=True)
+        return
+    if item.currency != str(data.get("transfer_currency", "KZT")):
+        await callback.answer("Выберите счёт в той же валюте", show_alert=True)
         return
     await state.update_data(to_account_id=item.id, to_account_name=item.name)
     await state.set_state(ManageAccount.entering_transfer_amount)
@@ -950,7 +1175,7 @@ async def transfer_save(message: Message, state: FSMContext) -> None:
     await message.answer(
         "✅ Перевод выполнен\n\n"
         f"{html.escape(str(data['from_account_name']))} → {html.escape(str(data['to_account_name']))}\n"
-        f"<b>{format_money(amount_minor)}</b>"
+        f"<b>{format_money(amount_minor, str(data.get('transfer_currency', 'KZT')))}</b>"
     )
     await show_accounts_panel(message, message.chat.id)
 
