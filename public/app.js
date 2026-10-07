@@ -12,6 +12,7 @@ let activeKind = 'expense';
 let activePeriod = 'month';
 let customStart = '';
 let customEnd = '';
+const currencySymbols = {KZT:'₸', RUB:'₽', USD:'$'};
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -72,7 +73,13 @@ async function loadOptions() {
   const data = await api(`/api/options?kind=${activeKind}`);
   $('categorySelect').innerHTML = '<option value="">Выберите категорию</option>' + data.categories.map(x => `<option value="${escapeHtml(x.value)}">${escapeHtml(x.label)}</option>`).join('');
   $('accountSelect').innerHTML = '<option value="">Выберите счёт</option>' + data.accounts.map(x => `<option value="${x.id}" data-currency="${escapeHtml(x.currency)}">${escapeHtml(x.name)} · ${escapeHtml(x.balance)}</option>`).join('');
+  $('transactionCurrencySymbol').textContent = '₸';
 }
+
+$('accountSelect').onchange = () => {
+  const currency = $('accountSelect').selectedOptions[0]?.dataset.currency || 'KZT';
+  $('transactionCurrencySymbol').textContent = currencySymbols[currency] || currency;
+};
 
 function setDrawer(open) {
   $('transactionDrawer').classList.toggle('open', open); $('transactionDrawer').setAttribute('aria-hidden', String(!open)); $('drawerBackdrop').classList.toggle('hidden', !open);
@@ -97,11 +104,15 @@ $('transactionForm').onsubmit = async (event) => {
 function openDialog(mode) {
   const account = mode === 'account'; $('dialogTitle').textContent = account ? 'Новый счёт' : 'Новая категория';
   ['dialogBalanceLabel','dialogTypeLabel','dialogCurrencyLabel'].forEach(id => $(id).classList.toggle('hidden', !account));
-  $('dialogInterestLabel').classList.add('hidden'); $('dialogName').value = ''; $('dialogBalance').value = '0'; $('dialogInterest').value = ''; $('dialogType').value = 'card'; $('dialogCurrency').value = 'KZT'; $('dialogStatus').textContent = ''; $('smallDialog').dataset.mode = mode; $('smallDialog').showModal(); setTimeout(() => $('dialogName').focus(), 80);
+  $('dialogInterestLabel').classList.add('hidden'); $('dialogName').value = ''; $('dialogBalance').value = '0'; $('dialogInterest').value = ''; $('dialogType').value = 'card'; $('dialogCurrency').value = 'KZT'; $('dialogCurrencySymbol').textContent = '₸'; $('dialogStatus').textContent = ''; $('smallDialog').dataset.mode = mode; $('smallDialog').showModal(); setTimeout(() => $('dialogName').focus(), 80);
 }
 $('newAccount').onclick = () => openDialog('account'); $('newCategory').onclick = () => openDialog('category');
 $('closeSmallDialog').onclick = () => $('smallDialog').close();
 $('dialogType').onchange = () => $('dialogInterestLabel').classList.toggle('hidden', $('dialogType').value !== 'deposit');
+$('dialogCurrency').onchange = () => {
+  const currency = $('dialogCurrency').value;
+  $('dialogCurrencySymbol').textContent = currencySymbols[currency] || currency;
+};
 $('smallDialogForm').onsubmit = async (event) => {
   event.preventDefault(); const account = $('smallDialog').dataset.mode === 'account'; $('dialogStatus').textContent = 'Сохраняем…';
   try {

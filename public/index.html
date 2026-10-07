@@ -79,7 +79,7 @@
     <div class="drawer-head"><div><span class="eyebrow">Быстрая запись</span><h2>Новая операция</h2></div><button id="closeDrawer" class="icon-button">×</button></div>
     <div class="kind-switch"><button data-kind="expense" class="active">− Расход</button><button data-kind="income">+ Доход</button></div>
     <form id="transactionForm">
-      <label>Сумма, ₸<input id="amountInput" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
+      <label>Сумма, <span id="transactionCurrencySymbol">₸</span><input id="amountInput" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
       <label>Категория<select id="categorySelect" required></select></label>
       <button id="newCategory" type="button" class="subtle-button">＋ Своя категория</button>
       <label>Счёт<select id="accountSelect" required></select></label>
@@ -95,7 +95,7 @@
       <label id="dialogNameLabel">Название<input id="dialogName" autocomplete="off" required></label>
       <label id="dialogTypeLabel">Тип счёта<select id="dialogType"><option value="card">💳 Карта</option><option value="deposit">🏦 Депозит</option></select></label>
       <label id="dialogCurrencyLabel">Валюта<select id="dialogCurrency"><option value="KZT">₸ Тенге</option><option value="RUB">₽ Рубль</option><option value="USD">$ Доллар</option></select></label>
-      <label id="dialogBalanceLabel">Текущий остаток, ₸<input id="dialogBalance" inputmode="decimal" value="0"></label>
+      <label id="dialogBalanceLabel">Текущий остаток, <span id="dialogCurrencySymbol">₸</span><input id="dialogBalance" inputmode="decimal" value="0"></label>
       <label id="dialogInterestLabel" class="hidden">Годовая ставка, %<input id="dialogInterest" inputmode="decimal" placeholder="15,5"></label>
       <button id="dialogSubmit" value="default" class="primary-button">Сохранить</button>
       <p id="dialogStatus" class="form-status"></p>
