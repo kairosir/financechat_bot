@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -16,6 +17,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import Update
 from fastapi import FastAPI, Header, HTTPException, Request
+import jwt
+from jwt import PyJWKClient
+from jwt.exceptions import InvalidTokenError, PyJWKClientError
 
 import bot as bot_module
 from database import Database
@@ -28,11 +32,20 @@ DATABASE_URL = os.getenv("DATABASE_URL", "data/finance.db")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TIMEZONE = ZoneInfo(os.getenv("BOT_TIMEZONE", "Asia/Almaty"))
+NEON_AUTH_BASE_URL = os.getenv("NEON_AUTH_BASE_URL", "").strip().rstrip("/")
+NEON_AUTH_JWKS_URL = os.getenv("NEON_AUTH_JWKS_URL", "").strip()
+ADMIN_IDS = {
+    int(value.strip())
+    for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+    if value.strip().lstrip("-").isdigit()
+}
+_jwks_client = PyJWKClient(NEON_AUTH_JWKS_URL, cache_keys=True) if NEON_AUTH_JWKS_URL else None
 
 db = Database(DATABASE_URL)
 bot_module.db = db
 bot_module.timezone = TIMEZONE
 bot_module.public_base_url = PUBLIC_BASE_URL or None
+bot_module.admin_ids = ADMIN_IDS
 
 telegram_bot = Bot(
     token=BOT_TOKEN or "000000:development-token",
@@ -79,12 +92,19 @@ def verify_telegram_init_data(init_data: str) -> int | None:
 
 async def authorized_user(request: Request) -> int:
     await ensure_initialized()
-    user_id = verify_telegram_init_data(
+    telegram_user_id = verify_telegram_init_data(
         request.headers.get("X-Telegram-Init-Data", "")
     )
-    if user_id is not None:
-        return user_id
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    auth_subject = None
+    if scheme.lower() == "bearer" and token.count(".") == 2:
+        auth_subject = await verify_neon_auth_token(token)
+    if telegram_user_id is not None:
+        if auth_subject:
+            await db.bind_auth_identity(auth_subject, telegram_user_id, datetime.now(TIMEZONE))
+        return telegram_user_id
+    if auth_subject:
+        return await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
     if scheme.lower() == "bearer" and token:
         user_id = await db.user_by_shortcut_token(token)
         if user_id is not None:
@@ -95,6 +115,37 @@ async def authorized_user(request: Request) -> int:
         if user_id is not None:
             return user_id
     raise HTTPException(status_code=401, detail="Откройте приложение через Purpose Finance")
+
+
+async def verify_neon_auth_token(token: str) -> str | None:
+    if not _jwks_client or not NEON_AUTH_BASE_URL:
+        return None
+    try:
+        signing_key = await asyncio.to_thread(_jwks_client.get_signing_key_from_jwt, token)
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["EdDSA"],
+            issuer=NEON_AUTH_BASE_URL,
+            options={"verify_aud": False},
+        )
+    except (InvalidTokenError, PyJWKClientError, ValueError):
+        return None
+    subject = str(payload.get("sub", "")).strip()
+    return subject or None
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+async def selected_user(request: Request, owner_id: int | None) -> tuple[int, int]:
+    viewer_id = await authorized_user(request)
+    if owner_id is None or owner_id == viewer_id:
+        return viewer_id, viewer_id
+    if not is_admin(viewer_id):
+        raise HTTPException(status_code=403, detail="Нет доступа к данным другого пользователя")
+    return viewer_id, owner_id
 
 
 def parse_amount(value: object, allow_negative: bool = False) -> int | None:
@@ -168,6 +219,48 @@ async def health() -> dict[str, object]:
     return {"ok": True, "service": "purpose-finance-vercel"}
 
 
+@app.get("/api/config")
+async def public_config() -> dict[str, object]:
+    return {
+        "ok": True,
+        "auth_enabled": bool(NEON_AUTH_BASE_URL and NEON_AUTH_JWKS_URL),
+        "auth_url": NEON_AUTH_BASE_URL,
+    }
+
+
+@app.get("/api/me")
+async def me(request: Request) -> dict[str, object]:
+    user_id = await authorized_user(request)
+    return {"ok": True, "user_id": user_id, "is_admin": is_admin(user_id)}
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request) -> dict[str, object]:
+    user_id = await authorized_user(request)
+    if not is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Только для администратора")
+    result = []
+    for item in await db.users_overview():
+        target_id = int(item["user_id"])
+        accounts = await db.accounts(target_id)
+        result.append(
+            {
+                **item,
+                "user_id": target_id,
+                "accounts": [
+                    {
+                        "name": account.name,
+                        "balance": money(account.balance_minor, account.currency),
+                        "currency": account.currency,
+                        "account_type": account.account_type,
+                    }
+                    for account in accounts
+                ],
+            }
+        )
+    return {"ok": True, "users": result}
+
+
 @app.get("/api/whats-new")
 async def whats_new() -> dict[str, object]:
     return releases_payload()
@@ -192,10 +285,11 @@ async def telegram_webhook(
 async def dashboard(
     request: Request,
     period: str = "month",
-    start: str | None = None,
-    end: str | None = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    owner_id: Optional[int] = None,
 ) -> dict[str, object]:
-    user_id = await authorized_user(request)
+    viewer_id, user_id = await selected_user(request, owner_id)
     now = datetime.now(TIMEZONE)
     start_at, end_at, period_label = period_bounds(period, start, end)
     await db.ensure_default_account(user_id, now)
@@ -211,6 +305,8 @@ async def dashboard(
     expense = int(primary["expense"])
     return {
         "ok": True,
+        "owner_id": user_id,
+        "viewer_is_admin": is_admin(viewer_id),
         "period": period,
         "period_label": period_label,
         "balance_minor": balances.get("KZT", 0),
@@ -274,6 +370,8 @@ async def dashboard(
 
 
 @app.get("/api/options")
+@app.get("/api/shortcut/options")
+@app.get("/api/v1/shortcut/options")
 async def options(request: Request, kind: str = "expense") -> dict[str, object]:
     user_id = await authorized_user(request)
     if kind not in {"expense", "income"}:
@@ -282,27 +380,33 @@ async def options(request: Request, kind: str = "expense") -> dict[str, object]:
     custom = await db.custom_categories(user_id, kind)
     await db.ensure_default_account(user_id, datetime.now(TIMEZONE))
     accounts = await db.accounts(user_id)
+    category_items = [{"value": key, "label": label} for key, label in defaults.items()] + [
+        {"value": f"custom|{item.name}", "label": custom_label(item.name)}
+        for item in custom
+    ]
+    account_items = [
+        {
+            "id": item.id,
+            "name": item.name,
+            "label": f"{item.name} · {money(item.balance_minor, item.currency)}",
+            "balance": money(item.balance_minor, item.currency),
+            "currency": item.currency,
+            "account_type": item.account_type,
+        }
+        for item in accounts
+    ]
     return {
         "ok": True,
-        "categories": [{"value": key, "label": label} for key, label in defaults.items()]
-        + [
-            {"value": f"custom|{item.name}", "label": custom_label(item.name)}
-            for item in custom
-        ],
-        "accounts": [
-            {
-                "id": item.id,
-                "name": item.name,
-                "balance": money(item.balance_minor, item.currency),
-                "currency": item.currency,
-                "account_type": item.account_type,
-            }
-            for item in accounts
-        ],
+        "categories": category_items,
+        "accounts": account_items,
+        "category_labels": [item["label"] for item in category_items],
+        "account_labels": [item["label"] for item in account_items],
     }
 
 
 @app.post("/api/transactions")
+@app.post("/api/shortcut/transaction")
+@app.post("/api/v1/transactions")
 async def create_transaction(request: Request) -> dict[str, object]:
     user_id = await authorized_user(request)
     payload = await request.json()
@@ -318,14 +422,28 @@ async def create_transaction(request: Request) -> dict[str, object]:
     category = str(payload.get("category", ""))
     defaults = EXPENSE_CATEGORIES if kind == "expense" else INCOME_CATEGORIES
     custom = await db.custom_categories(user_id, kind)
+    by_label = {label: key for key, label in defaults.items()}
+    by_label.update({custom_label(item.name): f"custom|{item.name}" for item in custom})
+    category = by_label.get(category, category)
     allowed = set(defaults) | {f"custom|{item.name}" for item in custom}
     if category not in allowed:
         raise HTTPException(status_code=400, detail="Выберите категорию")
-    try:
-        account_id = int(payload.get("account_id"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Выберите счёт")
-    account = await db.get_account(account_id, user_id)
+    account = None
+    account_label = str(payload.get("account", "")).strip()
+    if account_label:
+        for candidate in await db.accounts(user_id):
+            if account_label in {
+                candidate.name,
+                f"{candidate.name} · {money(candidate.balance_minor, candidate.currency)}",
+            }:
+                account = candidate
+                break
+    if account is None:
+        try:
+            account_id = int(payload.get("account_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Выберите счёт")
+        account = await db.get_account(account_id, user_id)
     if account is None:
         raise HTTPException(status_code=404, detail="Счёт не найден")
     transaction_id = await db.add_transaction(
@@ -360,7 +478,7 @@ async def create_account(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Можно создать не более 12 счетов")
     account_type = str(payload.get("account_type", "card"))
     currency = str(payload.get("currency", "KZT"))
-    if account_type not in {"card", "deposit"}:
+    if account_type not in {"card", "deposit", "cash"}:
         raise HTTPException(status_code=400, detail="Выберите тип счёта")
     if currency not in {"KZT", "RUB", "USD"}:
         raise HTTPException(status_code=400, detail="Выберите валюту")

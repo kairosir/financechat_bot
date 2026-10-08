@@ -48,7 +48,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 def iphone_setup_keyboard(url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⚡ Открыть быструю запись", url=url)],
+            [InlineKeyboardButton(text="⚡ Настроить команду iPhone", url=url)],
             [InlineKeyboardButton(text="✕ Закрыть", callback_data="iphone_close")],
         ]
     )
@@ -93,15 +93,19 @@ def categories_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def account_keyboard(accounts: list[tuple[int, str, int]]) -> InlineKeyboardMarkup:
+def account_icon(account_type: str) -> str:
+    return {"deposit": "🏦", "cash": "💵"}.get(account_type, "💳")
+
+
+def account_keyboard(accounts: list[tuple[int, str, int, str]]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"💳 {name}",
+                text=f"{account_icon(account_type)} {name}",
                 callback_data=f"account_select:{account_id}",
             )
         ]
-        for account_id, name, _ in accounts
+        for account_id, name, _, account_type in accounts
     ]
     rows.append(
         [
@@ -231,6 +235,7 @@ def account_type_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="💳 Карта", callback_data="account_type:card"),
                 InlineKeyboardButton(text="🏦 Депозит", callback_data="account_type:deposit"),
             ],
+            [InlineKeyboardButton(text="💵 Наличные", callback_data="account_type:cash")],
             [InlineKeyboardButton(text="‹ К счетам", callback_data="accounts:back")],
         ]
     )
@@ -261,20 +266,20 @@ def manage_kind_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def accounts_manage_keyboard(accounts: list[tuple[int, str, int]]) -> InlineKeyboardMarkup:
+def accounts_manage_keyboard(accounts: list[tuple[int, str, int, str]]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"✏️ {name}",
+                text=f"{account_icon(account_type)} {name}",
                 callback_data=f"account_manage:{account_id}",
             )
         ]
-        for account_id, name, _ in accounts
+        for account_id, name, _, account_type in accounts
     ]
     rows.extend(
         [
             [InlineKeyboardButton(text="＋ Добавить счёт", callback_data="accounts:add")],
-            [InlineKeyboardButton(text="⇄ Перевести между счетами", callback_data="accounts:transfer")],
+            [InlineKeyboardButton(text="⇄ Перевод средств", callback_data="accounts:transfer")],
             [InlineKeyboardButton(text="✕ Закрыть", callback_data="accounts:close")],
         ]
     )
@@ -302,22 +307,43 @@ def account_manage_keyboard(account_id: int) -> InlineKeyboardMarkup:
 
 
 def transfer_account_keyboard(
-    accounts: list[tuple[int, str, int]],
+    accounts: list[tuple[int, str, int, str]],
     direction: str,
     excluded_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"💳 {name}",
+                text=f"{account_icon(account_type)} {name}",
                 callback_data=f"transfer_{direction}:{account_id}",
             )
         ]
-        for account_id, name, _ in accounts
+        for account_id, name, _, account_type in accounts
         if account_id != excluded_id
     ]
     rows.append([InlineKeyboardButton(text="‹ К счетам", callback_data="accounts:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_users_keyboard(users: list[dict[str, object]]) -> InlineKeyboardMarkup:
+    rows = []
+    for item in users[:40]:
+        user_id = int(item["user_id"])
+        name = str(item.get("display_name") or item.get("username") or f"ID {user_id}")
+        rows.append(
+            [InlineKeyboardButton(text=f"👤 {name}", callback_data=f"admin_user:{user_id}")]
+        )
+    rows.append([InlineKeyboardButton(text="✕ Закрыть", callback_data="admin_close")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="‹ К пользователям", callback_data="admin_back")],
+            [InlineKeyboardButton(text="✕ Закрыть", callback_data="admin_close")],
+        ]
+    )
 
 
 def manage_categories_keyboard(

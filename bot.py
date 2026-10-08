@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 
 from database import Database, Transaction
 from keyboards import (
+    admin_back_keyboard,
+    admin_users_keyboard,
     account_keyboard,
     account_manage_keyboard,
     account_type_keyboard,
@@ -52,6 +54,7 @@ router = Router()
 db: Database
 timezone: ZoneInfo
 public_base_url: str | None
+admin_ids: set[int] = set()
 
 
 class AddTransaction(StatesGroup):
@@ -161,10 +164,22 @@ async def get_custom_pairs(user_id: int, kind: str) -> list[tuple[int, str]]:
     return [(item.id, item.name) for item in items]
 
 
-async def get_account_pairs(user_id: int) -> list[tuple[int, str, int]]:
+def account_icon(account_type: str) -> str:
+    return {"deposit": "🏦", "cash": "💵"}.get(account_type, "💳")
+
+
+def account_type_label(account_type: str) -> str:
+    return {"deposit": "Депозит", "cash": "Наличные"}.get(account_type, "Карта")
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in admin_ids
+
+
+async def get_account_pairs(user_id: int) -> list[tuple[int, str, int, str]]:
     items = await db.accounts(user_id)
     return [
-        (item.id, f"{item.name} · {item.currency}", item.balance_minor)
+        (item.id, f"{item.name} · {item.currency}", item.balance_minor, item.account_type)
         for item in items
     ]
 
@@ -233,12 +248,30 @@ async def edit_note_step(message: Message, state: FSMContext) -> None:
 async def command_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await db.ensure_default_account(message.chat.id, datetime.now(timezone))
+    if message.from_user:
+        display_name = " ".join(
+            part for part in (message.from_user.first_name, message.from_user.last_name) if part
+        )
+        await db.upsert_user_profile(
+            message.chat.id,
+            display_name or None,
+            message.from_user.username,
+            datetime.now(timezone),
+        )
     name = html.escape(message.from_user.first_name) if message.from_user else ""
     await message.answer(
         f"Привет, {name}! 👋\n\n"
         "Здесь можно быстро записывать доходы и расходы, создавать свои категории "
         "и смотреть понятную статистику. Дата и время сохраняются автоматически.",
         reply_markup=main_keyboard(),
+    )
+
+
+@router.message(Command("myid"))
+async def show_my_id(message: Message) -> None:
+    await message.answer(
+        f"Ваш Telegram ID: <code>{message.from_user.id if message.from_user else message.chat.id}</code>\n\n"
+        "Он нужен только владельцу сервиса для настройки админ-доступа."
     )
 
 
@@ -250,7 +283,7 @@ async def command_help(message: Message) -> None:
         "➖ <b>Расход</b> и ➕ <b>Доход</b> — новая операция.\n"
         "📊 <b>Сводка</b> — баланс и основные траты.\n"
         "🕘 <b>История</b> — последние операции с фильтром.\n"
-        "💳 <b>Счета</b> — остатки, новые счета и переводы между ними.\n"
+        "💳 <b>Счета</b> — остатки, новые счета и перевод средств.\n"
         "⚙️ <b>Категории</b> — свои направления доходов и расходов.\n"
         "✨ <b>Что нового?</b> — последние обновления бота.\n"
         "↩️ <b>Удалить последнюю</b> — исправить ошибочную запись.\n\n"
@@ -268,13 +301,13 @@ async def iphone_setup(message: Message) -> None:
         )
         return
     token = await db.rotate_shortcut_token(message.chat.id, datetime.now(timezone))
-    url = f"{public_base_url}/iphone?t={quote(token, safe='')}"
+    url = f"{public_base_url}/shortcut.html?t={quote(token, safe='')}"
     await message.answer(
         "<b>Быстрая запись с iPhone</b>\n\n"
-        "1. Откройте персональную ссылку кнопкой ниже.\n"
-        "2. В приложении «Команды» создайте команду с действием «Открыть URL» и вставьте эту ссылку.\n"
-        "3. Добавьте созданную команду в Пункт управления.\n\n"
-        "После этого расходы и доходы можно записывать без открытия Telegram. "
+        "1. Откройте инструкцию кнопкой ниже.\n"
+        "2. Один раз соберите команду из системных действий «Выбрать из меню», «Выбрать из списка» и «Запросить ввод».\n"
+        "3. Добавьте её в Пункт управления.\n\n"
+        "После этого сверху будут открываться небольшие нативные окна iPhone — без сайта и Telegram. "
         "Несколько последних ссылок остаются рабочими, поэтому готовая команда не сломается.",
         reply_markup=iphone_setup_keyboard(url),
     )
@@ -663,10 +696,10 @@ def period_start(period: str) -> tuple[datetime | None, str]:
     return None, "Всё время"
 
 
-async def send_summary(message: Message, period: str, edit: bool = False) -> None:
+async def build_summary_text(user_id: int, period: str) -> str:
     start, title = period_start(period)
-    totals = await db.totals_by_currency(message.chat.id, start)
-    accounts = await db.accounts(message.chat.id)
+    totals = await db.totals_by_currency(user_id, start)
+    accounts = await db.accounts(user_id)
     account_totals: dict[str, int] = {}
     for account in accounts:
         account_totals[account.currency] = account_totals.get(account.currency, 0) + account.balance_minor
@@ -685,9 +718,14 @@ async def send_summary(message: Message, period: str, edit: bool = False) -> Non
                 f"Доходы      <b>+{format_money(income_total, currency)}</b>",
                 f"Расходы     <b>−{format_money(expense_total, currency)}</b>",
                 f"Баланс       <b>{sign}{format_money(abs(balance), currency)}</b>",
-                f"На счетах   <b>{format_money(account_totals.get(currency, 0), currency)}</b>",
+                f"Счета         <b>{format_money(account_totals.get(currency, 0), currency)}</b>",
             ]
         )
+        for account in (item for item in accounts if item.currency == currency):
+            lines.append(
+                f"  {account_icon(account.account_type)} {html.escape(account.name)} — "
+                f"{format_money(account.balance_minor, account.currency)}"
+            )
         categories = bucket["categories"]
         if isinstance(categories, list) and categories:
             lines.append("<b>Основные расходы</b>")
@@ -695,7 +733,11 @@ async def send_summary(message: Message, period: str, edit: bool = False) -> Non
                 percent = round(total / expense_total * 100) if expense_total else 0
                 label = html.escape(category_label("expense", category))
                 lines.append(f"{label} — {format_money(total, currency)} · {percent}%")
-    text = "\n".join(lines)
+    return "\n".join(lines)
+
+
+async def send_summary(message: Message, period: str, edit: bool = False) -> None:
+    text = await build_summary_text(message.chat.id, period)
     markup = summary_keyboard(period)
     if edit:
         await message.edit_text(text, reply_markup=markup)
@@ -718,6 +760,68 @@ async def switch_summary(callback: CallbackQuery) -> None:
         await callback.message.edit_text("Что хотите добавить?", reply_markup=add_kind_keyboard())
         return
     await send_summary(callback.message, period, edit=True)
+
+
+async def show_admin_users(message: Message, edit: bool = False) -> None:
+    users = await db.users_overview()
+    text = (
+        "<b>🛡 Пользователи Purpose Finance</b>\n\n"
+        "Выберите пользователя для просмотра его счетов и сводки. "
+        "Админ-режим доступен только ID из ADMIN_TELEGRAM_IDS."
+    )
+    markup = admin_users_keyboard(users)
+    if edit:
+        await message.edit_text(text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
+
+
+@router.message(Command("admin"))
+async def admin_panel(message: Message) -> None:
+    if not message.from_user or not is_admin(message.from_user.id):
+        await message.answer(
+            "Админ-доступ не включён для вашего ID. Отправьте /myid владельцу сервиса."
+        )
+        return
+    await show_admin_users(message)
+
+
+@router.callback_query(F.data == "admin_back")
+async def admin_back(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await show_admin_users(callback.message, edit=True)
+
+
+@router.callback_query(F.data.startswith("admin_user:"))
+async def admin_user_summary(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    target_user_id = int(callback.data.split(":", maxsplit=1)[1])
+    users = await db.users_overview()
+    target = next((item for item in users if int(item["user_id"]) == target_user_id), None)
+    if target is None:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
+    name = html.escape(str(target.get("display_name") or target.get("username") or target_user_id))
+    text = f"<b>🛡 {name}</b>\n\n" + await build_summary_text(target_user_id, "month")
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(text, reply_markup=admin_back_keyboard())
+
+
+@router.callback_query(F.data == "admin_close")
+async def admin_close(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text("Админ-панель закрыта.")
 
 
 @router.message(F.text == "⚙️ Категории")
@@ -831,7 +935,7 @@ async def show_accounts_panel(
     accounts = await db.accounts(user_id)
     lines = ["<b>💳 Ваши счета</b>", ""]
     for item in accounts:
-        icon = "🏦" if item.account_type == "deposit" else "💳"
+        icon = account_icon(item.account_type)
         rate = f" · {format_interest_rate(item.interest_rate_bps)}" if item.account_type == "deposit" else ""
         lines.append(
             f"{icon} <b>{html.escape(item.name)}</b> — "
@@ -842,7 +946,7 @@ async def show_accounts_panel(
         totals[item.currency] = totals.get(item.currency, 0) + item.balance_minor
     lines.extend(["", "<b>Итого по валютам</b>"])
     lines.extend(format_money(total, currency) for currency, total in sorted(totals.items()))
-    pairs = [(item.id, item.name, item.balance_minor) for item in accounts]
+    pairs = [(item.id, item.name, item.balance_minor, item.account_type) for item in accounts]
     markup = accounts_manage_keyboard(pairs)
     if edit:
         await message.edit_text("\n".join(lines), reply_markup=markup)
@@ -892,7 +996,7 @@ async def account_add_start(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(ManageAccount.choosing_type, F.data.startswith("account_type:"))
 async def account_add_type(callback: CallbackQuery, state: FSMContext) -> None:
     account_type = callback.data.split(":", maxsplit=1)[1]
-    if account_type not in {"card", "deposit"}:
+    if account_type not in {"card", "deposit", "cash"}:
         await callback.answer("Неизвестный тип", show_alert=True)
         return
     await state.update_data(account_type=account_type)
@@ -1000,8 +1104,8 @@ async def account_manage(callback: CallbackQuery) -> None:
         return
     await callback.answer()
     if callback.message:
-        icon = "🏦" if item.account_type == "deposit" else "💳"
-        details = "Депозит" if item.account_type == "deposit" else "Карта"
+        icon = account_icon(item.account_type)
+        details = account_type_label(item.account_type)
         if item.account_type == "deposit":
             details += f" · {format_interest_rate(item.interest_rate_bps)}"
         await callback.message.edit_text(
@@ -1219,7 +1323,7 @@ async def unknown_message(message: Message) -> None:
 
 
 async def main() -> None:
-    global db, timezone, public_base_url
+    global db, timezone, public_base_url, admin_ids
 
     load_dotenv()
     token = os.getenv("BOT_TOKEN")
@@ -1234,6 +1338,11 @@ async def main() -> None:
 
     db = Database(os.getenv("DATABASE_PATH", "data/finance.db"))
     await db.initialize()
+    admin_ids = {
+        int(value.strip())
+        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+        if value.strip().lstrip("-").isdigit()
+    }
 
     current_shortcut_token = os.getenv("SHORTCUT_CURRENT_TOKEN", "").strip()
     legacy_shortcut_token = os.getenv("SHORTCUT_LEGACY_TOKEN", "").strip()

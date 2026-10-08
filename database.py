@@ -80,6 +80,15 @@ class AccountTransfer:
     created_at: str
 
 
+@dataclass(frozen=True)
+class UserProfile:
+    user_id: int
+    display_name: str | None
+    username: str | None
+    created_at: str
+    updated_at: str
+
+
 class Database:
     def __init__(self, path: str) -> None:
         self.postgres = path.startswith(("postgres://", "postgresql://"))
@@ -242,6 +251,26 @@ class Database:
                 ON shortcut_access_history(user_id, created_at DESC)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    user_id INTEGER PRIMARY KEY,
+                    display_name TEXT,
+                    username TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_identities (
+                    auth_subject TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
 
     def _initialize_postgres_sync(self) -> None:
         statements = [
@@ -312,6 +341,22 @@ class Database:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_shortcut_access_history_user ON shortcut_access_history(user_id, created_at DESC)",
+            """
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id BIGINT PRIMARY KEY,
+                display_name TEXT,
+                username TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS auth_identities (
+                auth_subject TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )
+            """,
         ]
         with self._connect() as connection:
             for statement in statements:
@@ -1031,3 +1076,140 @@ class Database:
                     (token_hash,),
                 ).fetchone()
         return int(row["user_id"]) if row else None
+
+    async def upsert_user_profile(
+        self,
+        user_id: int,
+        display_name: str | None,
+        username: str | None,
+        created_at: datetime,
+    ) -> None:
+        await asyncio.to_thread(
+            self._upsert_user_profile_sync,
+            user_id,
+            display_name,
+            username,
+            created_at.isoformat(timespec="seconds"),
+        )
+
+    def _upsert_user_profile_sync(
+        self,
+        user_id: int,
+        display_name: str | None,
+        username: str | None,
+        created_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_profiles
+                    (user_id, display_name, username, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    username = excluded.username,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, display_name, username, created_at, created_at),
+            )
+
+    async def bind_auth_identity(
+        self,
+        auth_subject: str,
+        user_id: int,
+        created_at: datetime,
+    ) -> bool:
+        if not auth_subject or len(auth_subject) > 255:
+            return False
+        return await asyncio.to_thread(
+            self._bind_auth_identity_sync,
+            auth_subject,
+            user_id,
+            created_at.isoformat(timespec="seconds"),
+        )
+
+    def _bind_auth_identity_sync(
+        self,
+        auth_subject: str,
+        user_id: int,
+        created_at: str,
+    ) -> bool:
+        try:
+            with self._connect() as connection:
+                current = connection.execute(
+                    "SELECT user_id FROM auth_identities WHERE auth_subject = ?",
+                    (auth_subject,),
+                ).fetchone()
+                if current is not None:
+                    return int(current["user_id"]) == user_id
+                connection.execute(
+                    """
+                    INSERT INTO auth_identities (auth_subject, user_id, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (auth_subject, user_id, created_at),
+                )
+                return True
+        except (sqlite3.IntegrityError, PostgresIntegrityError):
+            return False
+
+    async def user_by_auth_subject(
+        self,
+        auth_subject: str,
+        created_at: datetime,
+    ) -> int:
+        return await asyncio.to_thread(
+            self._user_by_auth_subject_sync,
+            auth_subject,
+            created_at.isoformat(timespec="seconds"),
+        )
+
+    def _user_by_auth_subject_sync(self, auth_subject: str, created_at: str) -> int:
+        digest = hashlib.sha256(auth_subject.encode("utf-8")).digest()
+        generated_user_id = -(int.from_bytes(digest[:7], "big") + 1)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT user_id FROM auth_identities WHERE auth_subject = ?",
+                (auth_subject,),
+            ).fetchone()
+            if row is not None:
+                return int(row["user_id"])
+            connection.execute(
+                """
+                INSERT INTO auth_identities (auth_subject, user_id, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(auth_subject) DO NOTHING
+                """,
+                (auth_subject, generated_user_id, created_at),
+            )
+            row = connection.execute(
+                "SELECT user_id FROM auth_identities WHERE auth_subject = ?",
+                (auth_subject,),
+            ).fetchone()
+        assert row is not None
+        return int(row["user_id"])
+
+    async def users_overview(self) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._users_overview_sync)
+
+    def _users_overview_sync(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                WITH user_ids AS (
+                    SELECT user_id FROM accounts
+                    UNION SELECT user_id FROM transactions
+                    UNION SELECT user_id FROM custom_categories
+                    UNION SELECT user_id FROM shortcut_access
+                    UNION SELECT user_id FROM user_profiles
+                    UNION SELECT user_id FROM auth_identities
+                )
+                SELECT u.user_id, p.display_name, p.username,
+                       (SELECT COUNT(*) FROM accounts a WHERE a.user_id = u.user_id) AS account_count,
+                       (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.user_id) AS transaction_count
+                FROM user_ids u
+                LEFT JOIN user_profiles p ON p.user_id = u.user_id
+                ORDER BY transaction_count DESC, account_count DESC, u.user_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]

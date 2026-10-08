@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#120b24">
+  <title>Purpose Finance — Команда iPhone</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .guide{display:grid;gap:12px}.guide article{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:16px}.guide h2{font-size:17px;margin:0 0 8px}.guide p,.guide li{color:var(--muted);font-size:13px;line-height:1.55}.guide code{display:block;overflow:auto;background:#100a19;border:1px solid var(--line);padding:11px;border-radius:12px;color:#d8cced;font-size:11px}.copy{width:100%;border:0;border-radius:13px;background:#302044;color:#fff;padding:12px;font:700 13px inherit;cursor:pointer}.warning{color:#fbbf24!important}
+  </style>
+</head>
+<body><main class="shell">
+  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">👛</span><span><strong>Purpose</strong><small>Finance</small></span></a></header>
+  <section class="balance-card"><span class="eyebrow">iPhone Shortcuts</span><h1 style="font-size:32px;margin-bottom:10px">Нативная быстрая запись</h1><p class="muted">После однократной настройки команда будет показывать небольшие системные окна сверху — сайт открываться не будет.</p></section>
+  <section class="guide section-block">
+    <article><h2>1. Создайте команду</h2><p>Откройте приложение «Команды», нажмите «+» и назовите команду <b>Purpose Finance</b>.</p><a class="copy" style="display:block;text-align:center;text-decoration:none" href="shortcuts://create-shortcut?name=Purpose%20Finance">Открыть «Команды»</a></article>
+    <article><h2>2. Сохраните персональный ключ</h2><p class="warning">Не отправляйте его другим: ключ даёт доступ только к вашим финансовым данным.</p><code id="tokenValue"></code><button id="copyToken" class="copy">Скопировать ключ</button></article>
+    <article><h2>3. Добавьте действия</h2><ol><li>«Выбрать из меню»: <b>Расход</b> / <b>Доход</b>. Сохраните результат как <b>kind</b>: expense или income.</li><li>«Получить содержимое URL» методом GET: URL ниже, заголовок <b>Authorization</b> = <b>Bearer персональный_ключ</b>.</li><li>Из словаря ответа возьмите <b>category_labels</b> → «Выбрать из списка», затем <b>account_labels</b> → «Выбрать из списка».</li><li>Добавьте «Запросить ввод» для суммы и ещё один — для необязательного комментария.</li><li>«Получить содержимое URL» методом POST на адрес сохранения. Тип тела — JSON, заголовок Authorization такой же.</li><li>Добавьте «Показать уведомление»: операция сохранена.</li></ol></article>
+    <article><h2>Получение вариантов</h2><code id="optionsUrl"></code><button class="copy" data-copy="optionsUrl">Скопировать URL</button></article>
+    <article><h2>Сохранение операции</h2><code id="saveUrl"></code><button class="copy" data-copy="saveUrl">Скопировать URL</button></article>
+    <article><h2>Тело запроса JSON</h2><code>{
+  "kind": "expense",
+  "category": "выбранная категория",
+  "account": "выбранный счёт",
+  "amount": "введённая сумма",
+  "note": "введённый комментарий"
+}</code><p>Подставьте в значения переменные из предыдущих действий. Для дохода используйте <b>income</b>.</p></article>
+  </section>
+</main><script>
+const token = new URLSearchParams(location.search).get('t') || '';
+const optionsUrl = `${location.origin}/api/shortcut/options?kind=expense`;
+const saveUrl = `${location.origin}/api/shortcut/transaction`;
+document.getElementById('tokenValue').textContent = token || 'Ключ не найден — откройте эту страницу из бота.';
+document.getElementById('optionsUrl').textContent = optionsUrl;
+document.getElementById('saveUrl').textContent = saveUrl;
+async function copy(value, button){ await navigator.clipboard.writeText(value); const old=button.textContent; button.textContent='✓ Скопировано'; setTimeout(()=>button.textContent=old,1200); }
+document.getElementById('copyToken').onclick = event => copy(token,event.currentTarget);
+document.querySelectorAll('[data-copy]').forEach(button => button.onclick = () => copy(document.getElementById(button.dataset.copy).textContent,button));
+  </script></body>
+</html>

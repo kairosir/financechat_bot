@@ -3,9 +3,14 @@ if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor?.('#0f0a19'); tg.setBackgro
 
 const token = new URLSearchParams(location.search).get('t') || '';
 const initData = tg?.initData || '';
+let authClient = null;
+let authToken = '';
+let authSession = null;
+let authMode = 'signin';
+let viewOwnerId = null;
 const authHeaders = () => ({
   ...(initData ? {'X-Telegram-Init-Data': initData} : {}),
-  ...(token ? {'Authorization': `Bearer ${token}`} : {}),
+  ...((authToken || token) ? {'Authorization': `Bearer ${authToken || token}`} : {}),
 });
 const $ = (id) => document.getElementById(id);
 let activeKind = 'expense';
@@ -13,6 +18,11 @@ let activePeriod = 'month';
 let customStart = '';
 let customEnd = '';
 const currencySymbols = {KZT:'₸', RUB:'₽', USD:'$'};
+const accountTypeMeta = {
+  card:{icon:'💳',label:'Карта'},
+  deposit:{icon:'🏦',label:'Депозит'},
+  cash:{icon:'💵',label:'Наличные'},
+};
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -37,8 +47,10 @@ function renderDashboard(data) {
   $('periodLabel').textContent = data.period_label.toLowerCase();
   $('historyTitle').textContent = data.period_label;
   $('currencyTotals').innerHTML = (data.currency_totals || []).map(item => `<div class="currency-total"><strong>${escapeHtml(item.balance)}</strong><small>${escapeHtml(item.currency)} · +${escapeHtml(item.income)} / −${escapeHtml(item.expense)}</small></div>`).join('');
-  $('accounts').innerHTML = data.accounts.length ? data.accounts.map(item => `
-    <article class="account-card"><span>${item.account_type === 'deposit' ? '🏦' : '💳'} ${escapeHtml(item.name)}</span><strong>${escapeHtml(item.balance)}</strong><small>${item.account_type === 'deposit' ? `Депозит${item.interest_rate ? ` · ${escapeHtml(item.interest_rate)} годовых` : ''}` : 'Карта'} · ${escapeHtml(item.currency)}</small></article>`).join('') : '<div class="empty">Счета пока не созданы</div>';
+  $('accounts').innerHTML = data.accounts.length ? data.accounts.map(item => {
+    const meta = accountTypeMeta[item.account_type] || accountTypeMeta.card;
+    return `<article class="account-card"><span>${meta.icon} ${escapeHtml(item.name)}</span><strong>${escapeHtml(item.balance)}</strong><small>${meta.label}${item.account_type === 'deposit' && item.interest_rate ? ` · ${escapeHtml(item.interest_rate)} годовых` : ''} · ${escapeHtml(item.currency)}</small></article>`;
+  }).join('') : '<div class="empty">Счета пока не созданы</div>';
   const max = Math.max(...data.top_categories.map(x => Number(x.amount_minor) || 0), 1);
   $('topCategories').innerHTML = data.top_categories.length ? data.top_categories.map(item => {
     const value = Number(item.amount_minor) || 0;
@@ -60,12 +72,20 @@ async function refresh() {
   try {
     const params = new URLSearchParams({period:activePeriod});
     if (activePeriod === 'custom') { params.set('start', customStart); params.set('end', customEnd); }
+    if (viewOwnerId !== null) params.set('owner_id', String(viewOwnerId));
     const data = await api(`/api/dashboard?${params}`);
     renderDashboard(data);
-    $('loading').classList.add('hidden'); $('authError').classList.add('hidden'); $('dashboard').classList.remove('hidden'); $('addTransaction').classList.remove('hidden');
-    document.querySelector('.status-pill').classList.add('ready'); $('connectionLabel').textContent = 'Всё сохранено';
+    $('loading').classList.add('hidden'); $('authError').classList.add('hidden'); $('dashboard').classList.remove('hidden');
+    $('addTransaction').classList.toggle('hidden', viewOwnerId !== null);
+    $('newAccount').classList.toggle('hidden', viewOwnerId !== null);
+    document.querySelector('.status-pill').classList.add('ready'); $('connectionLabel').textContent = viewOwnerId === null ? 'Всё сохранено' : `Просмотр ID ${viewOwnerId}`;
+    try {
+      const me = await api('/api/me');
+      $('adminButton').classList.toggle('hidden', !me.is_admin);
+      $('signOutButton').classList.toggle('hidden', !authSession);
+    } catch (_) {}
   } catch (error) {
-    $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('connectionLabel').textContent = 'Нужен Telegram';
+    $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('addTransaction').classList.add('hidden'); $('connectionLabel').textContent = 'Нужен вход';
   }
 }
 
@@ -143,4 +163,104 @@ async function openUpdates() {
 $('whatsNewButton').onclick = openUpdates;
 $('closeUpdates').onclick = () => $('updatesDialog').close();
 
-refresh();
+async function refreshAuthToken() {
+  if (!authClient) return false;
+  const sessionResult = await authClient.getSession();
+  authSession = sessionResult?.data?.user ? sessionResult.data : null;
+  if (!authSession) { authToken = ''; return false; }
+  const tokenResult = await authClient.token();
+  authToken = tokenResult?.data?.token || '';
+  return Boolean(authToken);
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  document.querySelectorAll('[data-auth-mode]').forEach(button => button.classList.toggle('active', button.dataset.authMode === mode));
+  $('authNameLabel').classList.toggle('hidden', mode !== 'signup');
+  $('authPassword').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
+  $('authSubmit').textContent = mode === 'signup' ? 'Создать аккаунт' : 'Войти';
+  $('forgotPassword').classList.toggle('hidden', mode !== 'signin');
+  $('authStatus').textContent = '';
+}
+
+document.querySelectorAll('[data-auth-mode]').forEach(button => button.onclick = () => setAuthMode(button.dataset.authMode));
+
+$('authForm').onsubmit = async event => {
+  event.preventDefault();
+  if (!authClient) { $('authStatus').textContent = 'Вход по email пока недоступен'; return; }
+  $('authSubmit').disabled = true; $('authStatus').textContent = authMode === 'signup' ? 'Создаём аккаунт…' : 'Входим…';
+  try {
+    const credentials = {email:$('authEmail').value.trim(), password:$('authPassword').value};
+    const result = authMode === 'signup'
+      ? await authClient.signUp.email({...credentials, name:$('authName').value.trim() || credentials.email.split('@')[0]})
+      : await authClient.signIn.email(credentials);
+    if (result?.error) throw new Error(result.error.message || 'Не удалось войти');
+    await refreshAuthToken();
+    if (!authToken) throw new Error('Подтвердите email, затем выполните вход');
+    $('authStatus').textContent = '✓ Готово';
+    await refresh();
+  } catch (error) { $('authStatus').textContent = error.message || String(error); }
+  finally { $('authSubmit').disabled = false; }
+};
+
+$('forgotPassword').onclick = async () => {
+  const email = $('authEmail').value.trim();
+  if (!email) { $('authStatus').textContent = 'Сначала укажите email'; return; }
+  try {
+    const result = await authClient.requestPasswordReset({email, redirectTo:`${location.origin}/?reset=1`});
+    if (result?.error) throw new Error(result.error.message || 'Не удалось отправить письмо');
+    $('authStatus').textContent = 'Письмо для восстановления отправлено';
+  } catch (error) { $('authStatus').textContent = error.message || String(error); }
+};
+
+$('resetForm').onsubmit = async event => {
+  event.preventDefault();
+  const resetToken = new URLSearchParams(location.search).get('token') || '';
+  try {
+    const result = await authClient.resetPassword({newPassword:$('resetPassword').value, token:resetToken});
+    if (result?.error) throw new Error(result.error.message || 'Не удалось изменить пароль');
+    $('resetStatus').textContent = '✓ Пароль изменён. Теперь можно войти.';
+    history.replaceState({}, '', '/');
+  } catch (error) { $('resetStatus').textContent = error.message || String(error); }
+};
+$('closeReset').onclick = () => $('resetDialog').close();
+
+$('signOutButton').onclick = async () => {
+  if (authClient) await authClient.signOut();
+  authSession = null; authToken = ''; viewOwnerId = null;
+  await refresh();
+};
+
+async function openAdmin() {
+  $('adminDialog').showModal(); $('adminUsers').innerHTML = '<div class="empty">Загружаем пользователей…</div>';
+  try {
+    const data = await api('/api/admin/users');
+    $('adminUsers').innerHTML = '<button class="admin-user-card" data-owner="self"><strong>↩ Мои данные</strong><small>Вернуться к собственной сводке</small></button>' + data.users.map(user => {
+      const title = user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
+      const accounts = user.accounts.length ? user.accounts.map(account => `${accountTypeMeta[account.account_type]?.icon || '💳'} ${escapeHtml(account.name)} — ${escapeHtml(account.balance)}`).join('<br>') : 'Счетов пока нет';
+      return `<button class="admin-user-card" data-owner="${user.user_id}"><strong>${escapeHtml(title)}</strong><small>${accounts}</small></button>`;
+    }).join('');
+    document.querySelectorAll('.admin-user-card').forEach(button => button.onclick = async () => {
+      viewOwnerId = button.dataset.owner === 'self' ? null : Number(button.dataset.owner);
+      $('adminDialog').close(); await refresh();
+    });
+  } catch (error) { $('adminUsers').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+$('adminButton').onclick = openAdmin;
+$('closeAdmin').onclick = () => $('adminDialog').close();
+
+async function boot() {
+  try {
+    const config = await fetch('/api/config').then(response => response.json());
+    if (config.auth_enabled && window.PurposeAuthBundle?.createClient) {
+      authClient = window.PurposeAuthBundle.createClient(config.auth_url);
+      await refreshAuthToken();
+    }
+  } catch (_) {}
+  if (new URLSearchParams(location.search).get('reset') === '1' || new URLSearchParams(location.search).get('token')) {
+    $('resetDialog').showModal();
+  }
+  await refresh();
+}
+
+boot();

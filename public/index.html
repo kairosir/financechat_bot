@@ -8,6 +8,7 @@
   <title>Purpose Finance</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script defer src="/auth-client.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body>
@@ -25,8 +26,20 @@
 
     <section id="loading" class="state-card"><span class="loader"></span><p>Загружаем ваши финансы…</p></section>
     <section id="authError" class="state-card hidden">
-      <div class="state-icon">↗</div><h1>Откройте через Telegram</h1>
-      <p>Нажмите «🌐 Веб-приложение» в боте Purpose Finance — данные откроются безопасно и без пароля.</p>
+      <div class="auth-card">
+        <div class="state-icon">👛</div><h1>Вход в Purpose Finance</h1>
+        <p>Войдите по email или откройте Mini App через Telegram — данные хранятся в одной базе.</p>
+        <div class="auth-tabs"><button data-auth-mode="signin" class="active">Вход</button><button data-auth-mode="signup">Регистрация</button></div>
+        <form id="authForm">
+          <label id="authNameLabel" class="hidden">Имя<input id="authName" autocomplete="name" placeholder="Как к вам обращаться"></label>
+          <label>Email<input id="authEmail" type="email" autocomplete="email" required placeholder="name@example.com"></label>
+          <label>Пароль<input id="authPassword" type="password" autocomplete="current-password" minlength="8" required placeholder="Минимум 8 символов"></label>
+          <button id="authSubmit" class="primary-button" type="submit">Войти</button>
+          <button id="forgotPassword" class="subtle-button" type="button">Забыли пароль?</button>
+          <p id="authStatus" class="form-status"></p>
+        </form>
+        <div class="telegram-auth-note">В Telegram авторизация происходит автоматически — без отдельного пароля.</div>
+      </div>
     </section>
 
     <div id="dashboard" class="hidden">
@@ -41,7 +54,9 @@
       </section>
 
       <div class="dashboard-actions">
+        <button id="adminButton" class="updates-button hidden">🛡 Пользователи</button>
         <button id="whatsNewButton" class="updates-button">✨ Что нового?</button>
+        <button id="signOutButton" class="updates-button hidden">Выйти</button>
       </div>
 
       <section class="section-block">
@@ -93,7 +108,7 @@
     <form method="dialog" id="smallDialogForm">
       <div class="dialog-head"><h3 id="dialogTitle">Добавить</h3><button id="closeSmallDialog" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
       <label id="dialogNameLabel">Название<input id="dialogName" autocomplete="off" required></label>
-      <label id="dialogTypeLabel">Тип счёта<select id="dialogType"><option value="card">💳 Карта</option><option value="deposit">🏦 Депозит</option></select></label>
+      <label id="dialogTypeLabel">Тип счёта<select id="dialogType"><option value="card">💳 Карта</option><option value="deposit">🏦 Депозит</option><option value="cash">💵 Наличные</option></select></label>
       <label id="dialogCurrencyLabel">Валюта<select id="dialogCurrency"><option value="KZT">₸ Тенге</option><option value="RUB">₽ Рубль</option><option value="USD">$ Доллар</option></select></label>
       <label id="dialogBalanceLabel">Текущий остаток, <span id="dialogCurrencySymbol">₸</span><input id="dialogBalance" inputmode="decimal" value="0"></label>
       <label id="dialogInterestLabel" class="hidden">Годовая ставка, %<input id="dialogInterest" inputmode="decimal" placeholder="15,5"></label>
@@ -105,6 +120,20 @@
   <dialog id="updatesDialog" class="updates-dialog">
     <div class="dialog-head"><div><span class="eyebrow">Purpose Finance</span><h3>Что нового?</h3></div><button id="closeUpdates" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
     <div id="updatesList" class="updates-list"><div class="empty">Загружаем обновления…</div></div>
+  </dialog>
+
+  <dialog id="adminDialog" class="updates-dialog">
+    <div class="dialog-head"><div><span class="eyebrow">Только администратор</span><h3>Пользователи</h3></div><button id="closeAdmin" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
+    <div id="adminUsers" class="updates-list"><div class="empty">Загружаем пользователей…</div></div>
+  </dialog>
+
+  <dialog id="resetDialog">
+    <form id="resetForm">
+      <div class="dialog-head"><h3>Новый пароль</h3><button id="closeReset" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
+      <label>Новый пароль<input id="resetPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+      <button class="primary-button" type="submit">Сохранить пароль</button>
+      <p id="resetStatus" class="form-status"></p>
+    </form>
   </dialog>
 </body>
 </html>

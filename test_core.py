@@ -139,9 +139,12 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_accounts_balances_transfer_and_undo(self) -> None:
         now = datetime(2026, 10, 3, 12, 30, tzinfo=ZoneInfo("Asia/Almaty"))
-        cash = await self.database.add_account(42, "Наличные", 100000, now)
+        cash = await self.database.add_account(
+            42, "Наличные", 100000, now, account_type="cash"
+        )
         card = await self.database.add_account(42, "Kaspi", 250000, now)
         assert cash is not None and card is not None
+        self.assertEqual(cash.account_type, "cash")
 
         transaction_id = await self.database.add_transaction(
             42, "expense", "food", 25000, "Обед", now, account_id=cash.id
@@ -193,6 +196,24 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(totals["KZT"]["expense"], 10000)
         with self.assertRaisesRegex(ValueError, "одной валюте"):
             await self.database.transfer(42, deposit.id, card.id, 100, None, now)
+
+    async def test_profiles_auth_binding_and_admin_overview(self) -> None:
+        now = datetime(2026, 10, 8, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        await self.database.upsert_user_profile(42, "Владелец", "owner", now)
+        self.assertTrue(await self.database.bind_auth_identity("auth-owner", 42, now))
+        self.assertTrue(await self.database.bind_auth_identity("auth-owner", 42, now))
+        self.assertFalse(await self.database.bind_auth_identity("auth-owner", 7, now))
+        self.assertEqual(await self.database.user_by_auth_subject("auth-owner", now), 42)
+
+        generated = await self.database.user_by_auth_subject("web-user", now)
+        self.assertLess(generated, 0)
+        self.assertEqual(
+            await self.database.user_by_auth_subject("web-user", now), generated
+        )
+        users = await self.database.users_overview()
+        owner = next(item for item in users if int(item["user_id"]) == 42)
+        self.assertEqual(owner["display_name"], "Владелец")
+        self.assertEqual(owner["username"], "owner")
 
     async def test_shortcut_api_writes_to_shared_database(self) -> None:
         timezone = ZoneInfo("Asia/Almaty")
