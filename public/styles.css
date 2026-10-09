@@ -862,3 +862,429 @@ dialog select:focus {
 .admin-user-card strong, .admin-user-card small { display: block; }
 .admin-user-card small { color: var(--muted); line-height: 1.5; margin-top: 7px; }
 .admin-user-card:hover { border-color: #8b5cf6; }
+
+.mobile-date,
+.mobile-bottom-nav {
+  display: none;
+}
+
+@media (max-width: 719px) {
+  :root {
+    color-scheme: light;
+    --bg: #f6f4f7;
+    --surface: #ffffff;
+    --surface-2: #f1edf3;
+    --line: #e9e3eb;
+    --text: #211b24;
+    --muted: #877d89;
+    --purple: #6f2445;
+    --purple-2: #50162f;
+    --green: #21875a;
+    --red: #d94a63;
+    --shadow: 0 16px 40px rgba(70, 41, 59, 0.12);
+  }
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 14px;
+  }
+  body {
+    background: #f6f4f7;
+    color: var(--text);
+  }
+  .ambient {
+    display: none;
+  }
+  .shell {
+    width: 100%;
+    padding: max(14px, env(safe-area-inset-top)) 14px calc(118px + env(safe-area-inset-bottom));
+  }
+  .topbar {
+    margin-bottom: 18px;
+  }
+  .brand {
+    gap: 10px;
+  }
+  .brand-mark {
+    width: 39px;
+    height: 39px;
+    border-radius: 13px;
+    background: linear-gradient(145deg, #772a4d, #50162f);
+    box-shadow: 0 9px 22px rgba(80, 22, 47, 0.22);
+  }
+  .brand-mark svg {
+    width: 26px;
+    height: 26px;
+  }
+  .brand strong {
+    font-size: 17px;
+    line-height: 1.05;
+  }
+  .brand-subtitle {
+    display: none !important;
+  }
+  .brand .mobile-date {
+    display: block;
+    color: #948a96;
+    font-size: 12px;
+    margin-top: 3px;
+  }
+  .status-pill {
+    max-width: 116px;
+    overflow: hidden;
+    border-color: #e4dde7;
+    background: #fff;
+    color: #7e7480;
+    padding: 8px 10px;
+    box-shadow: 0 5px 18px rgba(70, 41, 59, 0.06);
+  }
+  .status-pill span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .balance-card {
+    scroll-margin-top: 14px;
+    background: linear-gradient(140deg, #712544 0%, #55172f 72%, #421125 100%);
+    border: 0;
+    border-radius: 25px;
+    padding: 20px;
+    color: #fff;
+    box-shadow: 0 18px 42px rgba(80, 22, 47, 0.24);
+  }
+  .balance-card:after {
+    width: 190px;
+    height: 190px;
+    right: -75px;
+    top: -95px;
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .balance-head {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .period {
+    background: rgba(255, 255, 255, 0.11);
+  }
+  .balance-card h1 {
+    font-size: clamp(36px, 11vw, 48px);
+    margin: 18px 0 22px;
+  }
+  .currency-totals {
+    gap: 7px;
+    margin: -10px 0 20px;
+  }
+  .currency-total {
+    min-width: 90px;
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.07);
+    padding: 7px 9px;
+  }
+  .currency-total small,
+  .balance-stats p {
+    color: rgba(255, 255, 255, 0.62);
+  }
+  .balance-stats {
+    gap: 16px;
+  }
+  .balance-stats > div {
+    border-top-color: rgba(255, 255, 255, 0.13);
+    padding-top: 14px;
+  }
+  .stat-icon.income {
+    color: #b6f3d0;
+    background: rgba(100, 226, 160, 0.13);
+  }
+  .stat-icon.expense {
+    color: #ffd1d8;
+    background: rgba(255, 170, 187, 0.13);
+  }
+  .dashboard-actions {
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: 7px;
+    margin: 12px 0 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .dashboard-actions::-webkit-scrollbar {
+    display: none;
+  }
+  .updates-button {
+    width: auto;
+    flex: 0 0 auto;
+    border-color: #e8e1ea;
+    background: #fff;
+    color: #655a67;
+    border-radius: 999px;
+    padding: 9px 12px;
+    box-shadow: 0 4px 14px rgba(70, 41, 59, 0.05);
+  }
+  .section-block {
+    scroll-margin-top: 14px;
+    margin-top: 27px;
+  }
+  .section-title {
+    margin-bottom: 12px;
+    align-items: center;
+  }
+  .eyebrow {
+    color: #9e929f;
+    font-size: 10px;
+  }
+  .section-title h2,
+  .drawer h2 {
+    font-size: 21px;
+    color: #211b24;
+  }
+  .text-button {
+    color: #6f2445;
+    background: #eee5e9;
+    border-radius: 999px;
+    padding: 8px 11px;
+  }
+  .accounts-grid {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding: 1px 1px 5px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+  .accounts-grid::-webkit-scrollbar {
+    display: none;
+  }
+  .account-card {
+    flex: 0 0 min(78vw, 310px);
+    scroll-snap-align: start;
+    border-color: #e9e3eb;
+    background: #fff;
+    border-radius: 19px;
+    padding: 16px;
+    box-shadow: 0 7px 22px rgba(70, 41, 59, 0.06);
+  }
+  .account-card:before {
+    background: linear-gradient(90deg, #9e466c, #5b1936);
+    margin-bottom: 13px;
+  }
+  .account-card span,
+  .account-card small {
+    color: #8c818e;
+  }
+  .account-card strong {
+    color: #211b24;
+    font-size: 20px;
+  }
+  .category-chart {
+    border-color: #e9e3eb;
+    background: #fff;
+    border-radius: 21px;
+    padding: 4px 15px;
+    box-shadow: 0 7px 22px rgba(70, 41, 59, 0.05);
+  }
+  .chart-row {
+    padding: 15px 0;
+    border-bottom-color: #eee9ef;
+  }
+  .chart-meta {
+    font-size: 14px;
+    font-weight: 650;
+  }
+  .chart-meta span:last-child {
+    color: #6f2445;
+  }
+  .chart-track {
+    height: 6px;
+    background: #eee9ef;
+  }
+  .chart-fill {
+    background: linear-gradient(90deg, #9d466b, #6f2445);
+  }
+  .chart-row:nth-child(3n + 2) .chart-fill {
+    background: linear-gradient(90deg, #6a8fd9, #416fbd);
+  }
+  .chart-row:nth-child(3n + 3) .chart-fill {
+    background: linear-gradient(90deg, #e78b61, #cf643e);
+  }
+  .history-list {
+    gap: 9px;
+  }
+  .history-item {
+    border-color: #e9e3eb;
+    background: #fff;
+    border-radius: 18px;
+    padding: 13px;
+    box-shadow: 0 6px 18px rgba(70, 41, 59, 0.045);
+  }
+  .history-icon {
+    background: #f1edf3;
+  }
+  .history-copy strong {
+    color: #211b24;
+  }
+  .history-copy small {
+    color: #8c818e;
+  }
+  .history-amount.expense {
+    color: #cb3e59;
+  }
+  .period-tabs {
+    padding-bottom: 10px;
+  }
+  .period-tabs button {
+    border-color: #e5dee7;
+    background: #fff;
+    color: #756a77;
+  }
+  .period-tabs button.active {
+    border-color: #6f2445;
+    background: #6f2445;
+  }
+  .custom-period {
+    border-color: #e5dee7;
+    background: #fff;
+  }
+  .custom-period input {
+    border-color: #e1d9e3;
+    background: #f8f6f9;
+    color: #211b24;
+  }
+  .fab:not(.hidden) {
+    display: none;
+  }
+  .mobile-bottom-nav:not(.hidden) {
+    position: fixed;
+    z-index: 25;
+    left: 12px;
+    right: 12px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-columns: 1fr 1fr 68px 1fr 1fr;
+    align-items: center;
+    min-height: 70px;
+    padding: 7px 8px;
+    border: 1px solid rgba(91, 67, 82, 0.12);
+    border-radius: 25px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 18px 48px rgba(67, 40, 56, 0.2);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .mobile-bottom-nav button {
+    border: 0;
+    background: transparent;
+    color: #958b97;
+    display: grid;
+    place-items: center;
+    gap: 3px;
+    padding: 5px 2px;
+    font: inherit;
+  }
+  .mobile-bottom-nav button > span {
+    font-size: 24px;
+    line-height: 1;
+  }
+  .mobile-bottom-nav button small {
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .mobile-bottom-nav button.active {
+    color: #591a36;
+  }
+  .mobile-bottom-nav .mobile-nav-add {
+    width: 58px;
+    height: 58px;
+    margin: -30px auto 0;
+    border-radius: 50%;
+    background: linear-gradient(145deg, #7b2c50, #50162f);
+    color: white;
+    box-shadow: 0 12px 24px rgba(80, 22, 47, 0.34);
+  }
+  .mobile-bottom-nav .mobile-nav-add > span {
+    font-size: 33px;
+    font-weight: 300;
+  }
+  .drawer {
+    width: 100%;
+    background: #fff;
+    border-color: #e7dfe9;
+    color: #211b24;
+    box-shadow: 0 -24px 70px rgba(65, 37, 54, 0.2);
+  }
+  .drawer-handle {
+    background: #d7cdd9;
+  }
+  .drawer label,
+  dialog label {
+    color: #746a76;
+  }
+  .drawer input,
+  .drawer select,
+  dialog input,
+  dialog select {
+    border-color: #dfd7e1;
+    background: #f8f6f9;
+    color: #211b24;
+  }
+  .kind-switch,
+  .auth-tabs {
+    background: #f1edf3;
+  }
+  .kind-switch button,
+  .auth-tabs button {
+    color: #817683;
+  }
+  .kind-switch button.active,
+  .auth-tabs button.active {
+    background: #fff;
+    color: #5d1d3b;
+    box-shadow: 0 3px 12px rgba(70, 41, 59, 0.08);
+  }
+  .primary-button {
+    background: linear-gradient(145deg, #7b2c50, #50162f);
+  }
+  .form-status {
+    color: #6f2445;
+  }
+  dialog {
+    border-color: #e2d9e4;
+    background: #fff;
+    color: #211b24;
+  }
+  dialog::backdrop,
+  .backdrop {
+    background: rgba(34, 20, 29, 0.48);
+  }
+  dialog label.checkbox-label,
+  .release-card,
+  .admin-user-card {
+    border-color: #e5dde7;
+    background: #f8f6f9;
+    color: #211b24;
+  }
+  .release-card p {
+    color: #504751;
+  }
+  .release-card ul,
+  .admin-user-card small {
+    color: #796f7b;
+  }
+  .auth-card {
+    border-color: #e6dfe8;
+    background: #fff;
+    color: #211b24;
+    box-shadow: 0 18px 48px rgba(70, 41, 59, 0.1);
+  }
+  .auth-card h1,
+  .state-card h1 {
+    color: #211b24;
+  }
+  .auth-card label {
+    color: #746a76;
+  }
+  .auth-card input {
+    border-color: #dfd7e1;
+    background: #f8f6f9;
+    color: #211b24;
+  }
+}

@@ -24,6 +24,9 @@ const accountTypeMeta = {
   cash:{icon:'💵',label:'Наличные'},
 };
 
+const mobileDate = new Intl.DateTimeFormat('ru-RU', {month:'long', year:'numeric'}).format(new Date());
+$('mobileDate').textContent = mobileDate.charAt(0).toUpperCase() + mobileDate.slice(1);
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -79,7 +82,9 @@ async function refresh() {
     const data = await api(`/api/dashboard?${params}`);
     renderDashboard(data);
     $('loading').classList.add('hidden'); $('authError').classList.add('hidden'); $('dashboard').classList.remove('hidden');
+    $('mobileNav').classList.remove('hidden');
     $('addTransaction').classList.toggle('hidden', viewOwnerId !== null);
+    $('mobileAddTransaction').classList.toggle('hidden', viewOwnerId !== null);
     $('newAccount').classList.toggle('hidden', viewOwnerId !== null);
     document.querySelector('.status-pill').classList.add('ready'); $('connectionLabel').textContent = viewOwnerId === null ? 'Всё сохранено' : `Просмотр ID ${viewOwnerId}`;
     try {
@@ -88,7 +93,7 @@ async function refresh() {
       $('signOutButton').classList.toggle('hidden', !authSession);
     } catch (_) {}
   } catch (error) {
-    $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('addTransaction').classList.add('hidden'); $('connectionLabel').textContent = 'Нужен вход';
+    $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('addTransaction').classList.add('hidden'); $('mobileNav').classList.add('hidden'); $('connectionLabel').textContent = 'Нужен вход';
   }
 }
 
@@ -112,6 +117,13 @@ function setDrawer(open) {
 function showFormError(error) { $('formStatus').textContent = error.message || String(error); tg?.HapticFeedback?.notificationOccurred('error'); }
 
 $('addTransaction').onclick = () => setDrawer(true); $('closeDrawer').onclick = () => setDrawer(false); $('drawerBackdrop').onclick = () => setDrawer(false);
+$('mobileAddTransaction').onclick = () => setDrawer(true);
+document.querySelectorAll('[data-scroll-to]').forEach(button => button.onclick = () => {
+  const target = $(button.dataset.scrollTo);
+  if (!target) return;
+  document.querySelectorAll('[data-scroll-to]').forEach(item => item.classList.toggle('active', item === button));
+  target.scrollIntoView({behavior:'smooth', block:'start'});
+});
 document.querySelectorAll('[data-kind]').forEach(button => button.onclick = () => {
   activeKind = button.dataset.kind; document.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('active', x === button)); loadOptions().catch(showFormError);
 });
