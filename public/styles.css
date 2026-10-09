@@ -874,6 +874,9 @@ dialog select:focus {
 .telegram-login-widget iframe {
   max-width: 100%;
 }
+.telegram-mobile-login {
+  display: none;
+}
 .dashboard-actions { gap: 8px; flex-wrap: wrap; }
 .admin-user-card {
   width: 100%;
@@ -1312,5 +1315,27 @@ dialog select:focus {
     border-color: #dfd7e1;
     background: #f8f6f9;
     color: #211b24;
+  }
+  .telegram-login-widget {
+    display: none;
+  }
+  .telegram-mobile-login {
+    width: 100%;
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    border-radius: 14px;
+    background: #229ed9;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 750;
+    text-decoration: none;
+    box-shadow: 0 10px 24px rgba(34, 158, 217, 0.24);
+  }
+  .telegram-mobile-login span {
+    font-size: 18px;
+    transform: rotate(-16deg);
   }
 }

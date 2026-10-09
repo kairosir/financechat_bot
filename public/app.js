@@ -39,12 +39,14 @@ async function api(path, options = {}) {
 
 function renderTelegramLogin(botUsername) {
   if (!botUsername || initData) return;
+  const normalizedUsername = String(botUsername).replace(/^@/, '');
+  $('telegramMobileLogin').href = `https://t.me/${encodeURIComponent(normalizedUsername)}?startapp=website_login`;
   const container = $('telegramLoginWidget');
   container.replaceChildren();
   const script = document.createElement('script');
   script.async = true;
   script.src = 'https://telegram.org/js/telegram-widget.js?22';
-  script.dataset.telegramLogin = String(botUsername).replace(/^@/, '');
+  script.dataset.telegramLogin = normalizedUsername;
   script.dataset.size = 'large';
   script.dataset.radius = '12';
   script.dataset.onauth = 'onTelegramAuth(user)';
