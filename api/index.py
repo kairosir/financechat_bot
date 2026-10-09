@@ -16,7 +16,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import Update
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError, PyJWKClientError
@@ -45,7 +45,11 @@ ADMIN_IDS = {
     for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
     if value.strip().lstrip("-").isdigit()
 }
+TELEGRAM_SESSION_COOKIE = "purpose_finance_telegram"
+TELEGRAM_SESSION_ISSUER = "purpose-finance-telegram"
+TELEGRAM_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 _jwks_client = PyJWKClient(NEON_AUTH_JWKS_URL, cache_keys=True) if NEON_AUTH_JWKS_URL else None
+_telegram_bot_username: str | None = None
 
 db = Database(DATABASE_URL)
 bot_module.db = db
@@ -96,6 +100,95 @@ def verify_telegram_init_data(init_data: str) -> int | None:
         return None
 
 
+def verify_telegram_login_data(
+    fields: dict[str, object],
+    bot_token: str = BOT_TOKEN,
+) -> int | None:
+    if not bot_token:
+        return None
+    received_hash = str(fields.get("hash", ""))
+    if not received_hash:
+        return None
+    clean_fields = {
+        str(key): str(value)
+        for key, value in fields.items()
+        if key != "hash" and value is not None
+    }
+    try:
+        auth_date = int(clean_fields.get("auth_date", "0"))
+        user_id = int(clean_fields.get("id", "0"))
+    except ValueError:
+        return None
+    now = int(time.time())
+    if user_id <= 0 or auth_date > now + 60 or now - auth_date > 10 * 60:
+        return None
+    data_check_string = "\n".join(
+        f"{key}={clean_fields[key]}" for key in sorted(clean_fields)
+    )
+    secret_key = hashlib.sha256(bot_token.encode()).digest()
+    calculated_hash = hmac.new(
+        secret_key,
+        data_check_string.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return user_id if hmac.compare_digest(received_hash, calculated_hash) else None
+
+
+def telegram_session_secret(bot_token: str = BOT_TOKEN) -> bytes:
+    return hmac.new(
+        bot_token.encode(),
+        b"purpose-finance-web-session",
+        hashlib.sha256,
+    ).digest()
+
+
+def create_telegram_session(user_id: int, bot_token: str = BOT_TOKEN) -> str:
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "iat": now,
+            "exp": now + TELEGRAM_SESSION_TTL_SECONDS,
+            "iss": TELEGRAM_SESSION_ISSUER,
+            "type": "telegram_web",
+        },
+        telegram_session_secret(bot_token),
+        algorithm="HS256",
+    )
+
+
+def verify_telegram_session(token: str, bot_token: str = BOT_TOKEN) -> int | None:
+    if not token or not bot_token:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            telegram_session_secret(bot_token),
+            algorithms=["HS256"],
+            issuer=TELEGRAM_SESSION_ISSUER,
+        )
+        if payload.get("type") != "telegram_web":
+            return None
+        user_id = int(payload.get("sub", "0"))
+    except (InvalidTokenError, TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
+
+
+async def telegram_bot_username() -> str | None:
+    global _telegram_bot_username
+    if _telegram_bot_username:
+        return _telegram_bot_username
+    if not BOT_TOKEN:
+        return None
+    try:
+        info = await telegram_bot.get_me()
+    except Exception:
+        return None
+    _telegram_bot_username = (info.username or "").lstrip("@") or None
+    return _telegram_bot_username
+
+
 async def authorized_user(request: Request) -> int:
     await ensure_initialized()
     telegram_user_id = verify_telegram_init_data(
@@ -111,6 +204,11 @@ async def authorized_user(request: Request) -> int:
         return telegram_user_id
     if auth_subject:
         return await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
+    telegram_session_user = verify_telegram_session(
+        request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
+    )
+    if telegram_session_user is not None:
+        return telegram_session_user
     if scheme.lower() == "bearer" and token:
         user_id = await db.user_by_shortcut_token(token)
         if user_id is not None:
@@ -227,17 +325,72 @@ async def health() -> dict[str, object]:
 
 @app.get("/api/config")
 async def public_config() -> dict[str, object]:
+    bot_username = await telegram_bot_username()
     return {
         "ok": True,
         "auth_enabled": bool(NEON_AUTH_BASE_URL and NEON_AUTH_JWKS_URL),
         "auth_url": NEON_AUTH_BASE_URL,
+        "telegram_login_enabled": bool(bot_username),
+        "telegram_bot_username": bot_username,
     }
+
+
+@app.post("/api/auth/telegram")
+async def telegram_login(request: Request, response: Response) -> dict[str, object]:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректные данные Telegram")
+    user_id = verify_telegram_login_data(payload)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Не удалось подтвердить вход через Telegram")
+    await ensure_initialized()
+    first_name = " ".join(str(payload.get("first_name", "")).strip().split())
+    last_name = " ".join(str(payload.get("last_name", "")).strip().split())
+    display_name = " ".join(part for part in (first_name, last_name) if part) or None
+    username = " ".join(str(payload.get("username", "")).strip().split()) or None
+    await db.upsert_user_profile(
+        user_id,
+        display_name,
+        username,
+        datetime.now(TIMEZONE),
+    )
+    response.set_cookie(
+        TELEGRAM_SESSION_COOKIE,
+        create_telegram_session(user_id),
+        max_age=TELEGRAM_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True, "user_id": user_id}
+
+
+@app.post("/api/auth/telegram/logout")
+async def telegram_logout(response: Response) -> dict[str, bool]:
+    response.delete_cookie(
+        TELEGRAM_SESSION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+    return {"ok": True}
 
 
 @app.get("/api/me")
 async def me(request: Request) -> dict[str, object]:
     user_id = await authorized_user(request)
-    return {"ok": True, "user_id": user_id, "is_admin": is_admin(user_id)}
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    can_sign_out = verify_telegram_session(
+        request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
+    ) is not None or (scheme.lower() == "bearer" and token.count(".") == 2)
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "is_admin": is_admin(user_id),
+        "can_sign_out": can_sign_out,
+    }
 
 
 @app.get("/api/admin/users")

@@ -37,6 +37,38 @@ async function api(path, options = {}) {
   return data;
 }
 
+function renderTelegramLogin(botUsername) {
+  if (!botUsername || initData) return;
+  const container = $('telegramLoginWidget');
+  container.replaceChildren();
+  const script = document.createElement('script');
+  script.async = true;
+  script.src = 'https://telegram.org/js/telegram-widget.js?22';
+  script.dataset.telegramLogin = String(botUsername).replace(/^@/, '');
+  script.dataset.size = 'large';
+  script.dataset.radius = '12';
+  script.dataset.onauth = 'onTelegramAuth(user)';
+  container.appendChild(script);
+  $('telegramLoginBlock').classList.remove('hidden');
+}
+
+window.onTelegramAuth = async user => {
+  $('telegramLoginStatus').textContent = 'Входим через Telegram…';
+  try {
+    const response = await fetch('/api/auth/telegram', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(user),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || 'Не удалось войти через Telegram');
+    $('telegramLoginStatus').textContent = '✓ Готово';
+    await refresh();
+  } catch (error) {
+    $('telegramLoginStatus').textContent = error.message || String(error);
+  }
+};
+
 function formatDate(value) {
   const date = new Date(value);
   return new Intl.DateTimeFormat('ru-RU', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}).format(date);
@@ -90,7 +122,7 @@ async function refresh() {
     try {
       const me = await api('/api/me');
       $('adminButton').classList.toggle('hidden', !me.is_admin);
-      $('signOutButton').classList.toggle('hidden', !authSession);
+      $('signOutButton').classList.toggle('hidden', !(authSession || me.can_sign_out));
     } catch (_) {}
   } catch (error) {
     $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('addTransaction').classList.add('hidden'); $('mobileNav').classList.add('hidden'); $('connectionLabel').textContent = 'Нужен вход';
@@ -245,6 +277,7 @@ $('closeReset').onclick = () => $('resetDialog').close();
 
 $('signOutButton').onclick = async () => {
   if (authClient) await authClient.signOut();
+  await fetch('/api/auth/telegram/logout', {method:'POST'}).catch(() => {});
   authSession = null; authToken = ''; viewOwnerId = null;
   await refresh();
 };
@@ -274,6 +307,7 @@ async function boot() {
       authClient = window.PurposeAuthBundle.createClient(config.auth_url);
       await refreshAuthToken();
     }
+    if (config.telegram_login_enabled) renderTelegramLogin(config.telegram_bot_username);
   } catch (_) {}
   if (new URLSearchParams(location.search).get('reset') === '1' || new URLSearchParams(location.search).get('token')) {
     $('resetDialog').showModal();

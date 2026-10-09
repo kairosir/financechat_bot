@@ -848,6 +848,32 @@ dialog select:focus {
   line-height: 1.45;
   text-align: center;
 }
+.telegram-login-block {
+  margin-top: 14px;
+}
+.auth-separator {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 4px 0 14px;
+}
+.auth-separator:before,
+.auth-separator:after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+}
+.telegram-login-widget {
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+}
+.telegram-login-widget iframe {
+  max-width: 100%;
+}
 .dashboard-actions { gap: 8px; flex-wrap: wrap; }
 .admin-user-card {
   width: 100%;

@@ -1,12 +1,20 @@
 import asyncio
+import hashlib
+import hmac
 import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from bot import format_money, parse_amount
+from api.index import (
+    create_telegram_session,
+    verify_telegram_login_data,
+    verify_telegram_session,
+)
 from database import Database
 from aiohttp.test_utils import TestClient, TestServer
 from shortcut_api import (
@@ -37,6 +45,33 @@ class AmountTests(unittest.TestCase):
         self.assertIsNone(clean_note("  "))
         with self.assertRaises(ValueError):
             clean_note("x" * 121)
+
+    def test_telegram_web_login_signature_and_session(self) -> None:
+        bot_token = "123456:test-token"
+        payload = {
+            "id": "7297320277",
+            "first_name": "Purpose",
+            "username": "owner",
+            "auth_date": str(int(time.time())),
+        }
+        data_check_string = "\n".join(
+            f"{key}={payload[key]}" for key in sorted(payload)
+        )
+        secret_key = hashlib.sha256(bot_token.encode()).digest()
+        payload["hash"] = hmac.new(
+            secret_key,
+            data_check_string.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(
+            verify_telegram_login_data(payload, bot_token),
+            7297320277,
+        )
+        rejected = dict(payload, first_name="Подмена")
+        self.assertIsNone(verify_telegram_login_data(rejected, bot_token))
+        session = create_telegram_session(7297320277, bot_token)
+        self.assertEqual(verify_telegram_session(session, bot_token), 7297320277)
+        self.assertIsNone(verify_telegram_session(session, "wrong-token"))
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
