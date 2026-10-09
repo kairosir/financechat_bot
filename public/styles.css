@@ -525,6 +525,24 @@ dialog input {
 dialog input:focus {
   border-color: #9f7aea;
 }
+dialog label.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 13px;
+  border: 1px solid #49375c;
+  background: #100a19;
+  border-radius: 13px;
+  font-size: 13px;
+  cursor: pointer;
+}
+dialog label.checkbox-label input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: #8b5cf6;
+}
 .drawer label:first-child input {
   font-size: 26px;
   font-weight: 800;

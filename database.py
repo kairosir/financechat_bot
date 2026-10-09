@@ -67,6 +67,8 @@ class Account:
     account_type: str = "card"
     currency: str = "KZT"
     interest_rate_bps: int | None = None
+    effective_interest_rate_bps: int | None = None
+    daily_interest_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,6 +153,14 @@ class Database:
             if "interest_rate_bps" not in account_columns:
                 connection.execute(
                     "ALTER TABLE accounts ADD COLUMN interest_rate_bps INTEGER"
+                )
+            if "effective_interest_rate_bps" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN effective_interest_rate_bps INTEGER"
+                )
+            if "daily_interest_enabled" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN daily_interest_enabled INTEGER NOT NULL DEFAULT 0"
                 )
             connection.execute(
                 """
@@ -288,6 +298,8 @@ class Database:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT 'card'",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'KZT'",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS interest_rate_bps INTEGER",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS effective_interest_rate_bps INTEGER",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS daily_interest_enabled BOOLEAN NOT NULL DEFAULT FALSE",
             """
             CREATE TABLE IF NOT EXISTS transactions (
                 id BIGSERIAL PRIMARY KEY,
@@ -582,7 +594,8 @@ class Database:
             row = connection.execute(
                 """
                 SELECT id, user_id, name, balance_minor, created_at,
-                       account_type, currency, interest_rate_bps
+                       account_type, currency, interest_rate_bps,
+                       effective_interest_rate_bps, daily_interest_enabled
                 FROM accounts WHERE user_id = ? ORDER BY id LIMIT 1
                 """,
                 (user_id,),
@@ -608,7 +621,8 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT id, user_id, name, balance_minor, created_at,
-                       account_type, currency, interest_rate_bps
+                       account_type, currency, interest_rate_bps,
+                       effective_interest_rate_bps, daily_interest_enabled
                 FROM accounts WHERE user_id = ? ORDER BY id
                 """,
                 (user_id,),
@@ -623,7 +637,8 @@ class Database:
             row = connection.execute(
                 """
                 SELECT id, user_id, name, balance_minor, created_at,
-                       account_type, currency, interest_rate_bps
+                       account_type, currency, interest_rate_bps,
+                       effective_interest_rate_bps, daily_interest_enabled
                 FROM accounts WHERE id = ? AND user_id = ?
                 """,
                 (account_id, user_id),
@@ -639,6 +654,8 @@ class Database:
         account_type: str = "card",
         currency: str = "KZT",
         interest_rate_bps: int | None = None,
+        effective_interest_rate_bps: int | None = None,
+        daily_interest_enabled: bool = False,
     ) -> Account | None:
         return await asyncio.to_thread(
             self._add_account_sync,
@@ -649,6 +666,8 @@ class Database:
             account_type,
             currency,
             interest_rate_bps,
+            effective_interest_rate_bps,
+            daily_interest_enabled,
         )
 
     def _add_account_sync(
@@ -660,17 +679,23 @@ class Database:
         account_type: str,
         currency: str,
         interest_rate_bps: int | None,
+        effective_interest_rate_bps: int | None,
+        daily_interest_enabled: bool,
     ) -> Account | None:
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
                     """
                     INSERT INTO accounts
-                        (user_id, name, balance_minor, created_at, account_type, currency, interest_rate_bps)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (user_id, name, balance_minor, created_at, account_type, currency,
+                         interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """ + (" RETURNING id" if self.postgres else "") + """
                     """,
-                    (user_id, name, balance_minor, created_at, account_type, currency, interest_rate_bps),
+                    (
+                        user_id, name, balance_minor, created_at, account_type, currency,
+                        interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled,
+                    ),
                 )
                 account_id = self._inserted_id(cursor)
         except (sqlite3.IntegrityError, PostgresIntegrityError):
@@ -684,6 +709,8 @@ class Database:
             account_type,
             currency,
             interest_rate_bps,
+            effective_interest_rate_bps,
+            daily_interest_enabled,
         )
 
     async def set_account_balance(

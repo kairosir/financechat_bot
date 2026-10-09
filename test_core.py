@@ -175,12 +175,23 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             account_type="deposit",
             currency="USD",
             interest_rate_bps=425,
+            effective_interest_rate_bps=438,
+            daily_interest_enabled=True,
         )
         card = await self.database.add_account(
             42, "Kaspi", 500000, now, currency="KZT"
         )
         assert deposit is not None and card is not None
-        self.assertEqual((deposit.account_type, deposit.currency, deposit.interest_rate_bps), ("deposit", "USD", 425))
+        self.assertEqual(
+            (
+                deposit.account_type,
+                deposit.currency,
+                deposit.interest_rate_bps,
+                deposit.effective_interest_rate_bps,
+                deposit.daily_interest_enabled,
+            ),
+            ("deposit", "USD", 425, 438, True),
+        )
 
         await self.database.add_transaction(
             42, "income", "investment", 2500, None, now, account_id=deposit.id

@@ -259,6 +259,17 @@ async def admin_users(request: Request) -> dict[str, object]:
                         "balance": money(account.balance_minor, account.currency),
                         "currency": account.currency,
                         "account_type": account.account_type,
+                        "nominal_interest_rate": (
+                            f"{Decimal(account.interest_rate_bps) / 100:g}%"
+                            if account.interest_rate_bps is not None
+                            else None
+                        ),
+                        "effective_interest_rate": (
+                            f"{Decimal(account.effective_interest_rate_bps) / 100:g}%"
+                            if account.effective_interest_rate_bps is not None
+                            else None
+                        ),
+                        "daily_interest_enabled": account.daily_interest_enabled,
                     }
                     for account in accounts
                 ],
@@ -342,6 +353,17 @@ async def dashboard(
                     if item.interest_rate_bps is not None
                     else None
                 ),
+                "nominal_interest_rate": (
+                    f"{Decimal(item.interest_rate_bps) / 100:g}%"
+                    if item.interest_rate_bps is not None
+                    else None
+                ),
+                "effective_interest_rate": (
+                    f"{Decimal(item.effective_interest_rate_bps) / 100:g}%"
+                    if item.effective_interest_rate_bps is not None
+                    else None
+                ),
+                "daily_interest_enabled": item.daily_interest_enabled,
             }
             for item in account_items
         ],
@@ -489,10 +511,20 @@ async def create_account(request: Request) -> dict[str, object]:
     if currency not in {"KZT", "RUB", "USD"}:
         raise HTTPException(status_code=400, detail="Выберите валюту")
     interest_rate_bps: int | None = None
+    effective_interest_rate_bps: int | None = None
+    daily_interest_enabled = False
     if account_type == "deposit":
-        interest_rate_bps = parse_interest_rate(payload.get("interest_rate", ""))
+        interest_rate_bps = parse_interest_rate(
+            payload.get("nominal_interest_rate", payload.get("interest_rate", ""))
+        )
         if interest_rate_bps is None:
-            raise HTTPException(status_code=400, detail="Ставка должна быть от 0 до 100%")
+            raise HTTPException(status_code=400, detail="Номинальная ставка должна быть от 0 до 100%")
+        effective_interest_rate_bps = parse_interest_rate(
+            payload.get("effective_interest_rate", "")
+        )
+        if effective_interest_rate_bps is None:
+            raise HTTPException(status_code=400, detail="Эффективная ставка должна быть от 0 до 100%")
+        daily_interest_enabled = bool(payload.get("daily_interest_enabled", False))
     item = await db.add_account(
         user_id,
         name,
@@ -501,6 +533,8 @@ async def create_account(request: Request) -> dict[str, object]:
         account_type=account_type,
         currency=currency,
         interest_rate_bps=interest_rate_bps,
+        effective_interest_rate_bps=effective_interest_rate_bps,
+        daily_interest_enabled=daily_interest_enabled,
     )
     if item is None:
         raise HTTPException(status_code=409, detail="Такой счёт уже существует")
@@ -511,6 +545,17 @@ async def create_account(request: Request) -> dict[str, object]:
         "balance": money(item.balance_minor, item.currency),
         "currency": item.currency,
         "account_type": item.account_type,
+        "nominal_interest_rate": (
+            f"{Decimal(item.interest_rate_bps) / 100:g}%"
+            if item.interest_rate_bps is not None
+            else None
+        ),
+        "effective_interest_rate": (
+            f"{Decimal(item.effective_interest_rate_bps) / 100:g}%"
+            if item.effective_interest_rate_bps is not None
+            else None
+        ),
+        "daily_interest_enabled": item.daily_interest_enabled,
     }
 
 

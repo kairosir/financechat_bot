@@ -9,7 +9,8 @@ import psycopg
 
 TABLES = {
     "accounts": (
-        "id, user_id, name, balance_minor, created_at, account_type, currency, interest_rate_bps",
+        "id, user_id, name, balance_minor, created_at, account_type, currency, "
+        "interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled",
         "id",
     ),
     "transactions": (

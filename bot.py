@@ -36,6 +36,7 @@ from keyboards import (
     confirm_undo_keyboard,
     custom_label,
     currency_keyboard,
+    deposit_daily_interest_keyboard,
     history_keyboard,
     iphone_setup_keyboard,
     main_keyboard,
@@ -75,6 +76,8 @@ class ManageAccount(StatesGroup):
     entering_name = State()
     entering_balance = State()
     entering_interest = State()
+    entering_effective_interest = State()
+    choosing_daily_interest = State()
     renaming = State()
     editing_balance = State()
     choosing_transfer_from = State()
@@ -936,7 +939,13 @@ async def show_accounts_panel(
     lines = ["<b>💳 Ваши счета</b>", ""]
     for item in accounts:
         icon = account_icon(item.account_type)
-        rate = f" · {format_interest_rate(item.interest_rate_bps)}" if item.account_type == "deposit" else ""
+        rate = ""
+        if item.account_type == "deposit":
+            rate = f" · ном. {format_interest_rate(item.interest_rate_bps)}"
+            if item.effective_interest_rate_bps is not None:
+                rate += f" · эфф. {format_interest_rate(item.effective_interest_rate_bps)}"
+            if item.daily_interest_enabled:
+                rate += " · ежедневно"
         lines.append(
             f"{icon} <b>{html.escape(item.name)}</b> — "
             f"{format_money(item.balance_minor, item.currency)}{rate}"
@@ -1050,7 +1059,7 @@ async def account_add_balance(message: Message, state: FSMContext) -> None:
         await state.update_data(account_balance=balance_minor)
         await state.set_state(ManageAccount.entering_interest)
         await message.answer(
-            "<b>Ставка депозита</b>\n\nВведите годовую ставку как в приложении банка, например <b>15,5</b>.",
+            "<b>Номинальная ставка</b>\n\nВведите номинальную годовую ставку как в приложении банка, например <b>15,5</b>.",
             reply_markup=back_cancel_keyboard("accounts:back"),
         )
         return
@@ -1062,6 +1071,8 @@ async def save_new_account(
     state: FSMContext,
     balance_minor: int,
     interest_rate_bps: int | None,
+    effective_interest_rate_bps: int | None = None,
+    daily_interest_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
     item = await db.add_account(
@@ -1072,6 +1083,8 @@ async def save_new_account(
         account_type=str(data.get("account_type", "card")),
         currency=str(data.get("account_currency", "KZT")),
         interest_rate_bps=interest_rate_bps,
+        effective_interest_rate_bps=effective_interest_rate_bps,
+        daily_interest_enabled=daily_interest_enabled,
     )
     if item is None:
         await state.set_state(ManageAccount.entering_name)
@@ -1089,10 +1102,47 @@ async def save_new_account(
 async def account_add_interest(message: Message, state: FSMContext) -> None:
     rate_bps = parse_interest_rate(message.text or "")
     if rate_bps is None:
-        await message.answer("Введите ставку от 0 до 100, например 15,5.")
+        await message.answer("Введите номинальную ставку от 0 до 100, например 15,5.")
         return
+    await state.update_data(interest_rate_bps=rate_bps)
+    await state.set_state(ManageAccount.entering_effective_interest)
+    await message.answer(
+        "<b>Эффективная ставка</b>\n\nВведите эффективную годовую ставку, например <b>16,7</b>.",
+        reply_markup=back_cancel_keyboard("accounts:back"),
+    )
+
+
+@router.message(ManageAccount.entering_effective_interest)
+async def account_add_effective_interest(message: Message, state: FSMContext) -> None:
+    rate_bps = parse_interest_rate(message.text or "")
+    if rate_bps is None:
+        await message.answer("Введите эффективную ставку от 0 до 100, например 16,7.")
+        return
+    await state.update_data(effective_interest_rate_bps=rate_bps)
+    await state.set_state(ManageAccount.choosing_daily_interest)
+    await message.answer(
+        "<b>Начисление процентов</b>\n\nПроценты по депозиту начисляются каждый день?",
+        reply_markup=deposit_daily_interest_keyboard(),
+    )
+
+
+@router.callback_query(
+    ManageAccount.choosing_daily_interest,
+    F.data.startswith("deposit_daily_interest:"),
+)
+async def account_add_daily_interest(callback: CallbackQuery, state: FSMContext) -> None:
+    daily_interest_enabled = callback.data.endswith(":yes")
     data = await state.get_data()
-    await save_new_account(message, state, int(data["account_balance"]), rate_bps)
+    await callback.answer()
+    if callback.message:
+        await save_new_account(
+            callback.message,
+            state,
+            int(data["account_balance"]),
+            int(data["interest_rate_bps"]),
+            int(data["effective_interest_rate_bps"]),
+            daily_interest_enabled,
+        )
 
 
 @router.callback_query(F.data.startswith("account_manage:"))
@@ -1107,7 +1157,10 @@ async def account_manage(callback: CallbackQuery) -> None:
         icon = account_icon(item.account_type)
         details = account_type_label(item.account_type)
         if item.account_type == "deposit":
-            details += f" · {format_interest_rate(item.interest_rate_bps)}"
+            details += f" · номинальная {format_interest_rate(item.interest_rate_bps)}"
+            if item.effective_interest_rate_bps is not None:
+                details += f" · эффективная {format_interest_rate(item.effective_interest_rate_bps)}"
+            details += " · проценты ежедневно" if item.daily_interest_enabled else ""
         await callback.message.edit_text(
             f"<b>{icon} {html.escape(item.name)}</b>\n\n"
             f"{details} · {item.currency}\n"

@@ -254,6 +254,24 @@ def currency_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def deposit_daily_interest_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✓ Да, ежедневно",
+                    callback_data="deposit_daily_interest:yes",
+                ),
+                InlineKeyboardButton(
+                    text="Нет",
+                    callback_data="deposit_daily_interest:no",
+                ),
+            ],
+            [InlineKeyboardButton(text="‹ К счетам", callback_data="accounts:back")],
+        ]
+    )
+
+
 def manage_kind_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

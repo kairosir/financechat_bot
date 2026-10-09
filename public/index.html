@@ -111,7 +111,9 @@
       <label id="dialogTypeLabel">Тип счёта<select id="dialogType"><option value="card">💳 Карта</option><option value="deposit">🏦 Депозит</option><option value="cash">💵 Наличные</option></select></label>
       <label id="dialogCurrencyLabel">Валюта<select id="dialogCurrency"><option value="KZT">₸ Тенге</option><option value="RUB">₽ Рубль</option><option value="USD">$ Доллар</option></select></label>
       <label id="dialogBalanceLabel">Текущий остаток, <span id="dialogCurrencySymbol">₸</span><input id="dialogBalance" inputmode="decimal" value="0"></label>
-      <label id="dialogInterestLabel" class="hidden">Годовая ставка, %<input id="dialogInterest" inputmode="decimal" placeholder="15,5"></label>
+      <label id="dialogInterestLabel" class="hidden">Номинальная ставка, %<input id="dialogInterest" inputmode="decimal" placeholder="15,5"></label>
+      <label id="dialogEffectiveInterestLabel" class="hidden">Эффективная ставка, %<input id="dialogEffectiveInterest" inputmode="decimal" placeholder="16,7"></label>
+      <label id="dialogDailyInterestLabel" class="hidden checkbox-label"><input id="dialogDailyInterest" type="checkbox"> Проценты начисляются каждый день</label>
       <button id="dialogSubmit" value="default" class="primary-button">Сохранить</button>
       <p id="dialogStatus" class="form-status"></p>
     </form>
