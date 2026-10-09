@@ -44,6 +44,7 @@ from keyboards import (
     manage_kind_keyboard,
     note_keyboard,
     summary_keyboard,
+    telegram_login_confirm_keyboard,
     transfer_account_keyboard,
     web_app_keyboard,
 )
@@ -261,6 +262,25 @@ async def command_start(message: Message, state: FSMContext) -> None:
             message.from_user.username,
             datetime.now(timezone),
         )
+    start_parameter = ""
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        start_parameter = parts[1].strip() if len(parts) == 2 else ""
+    if start_parameter.startswith("weblogin_"):
+        token = start_parameter.removeprefix("weblogin_")
+        if not token or len(token) > 48:
+            await message.answer("Ссылка входа повреждена. Вернитесь на сайт и попробуйте ещё раз.")
+            return
+        await message.answer(
+            "<b>Вход на сайт Purpose Finance</b>\n\n"
+            "Подтвердите привязку этого Telegram-аккаунта. Кнопка сразу откроет "
+            "ваше финансовое приложение с теми же счетами и операциями.\n\n"
+            "Если вы не начинали вход на сайте — нажмите «Отмена».",
+            reply_markup=telegram_login_confirm_keyboard(
+                f"{public_base_url}/?login_request={quote(token, safe='')}"
+            ) if public_base_url else None,
+        )
+        return
     name = html.escape(message.from_user.first_name) if message.from_user else ""
     await message.answer(
         f"Привет, {name}! 👋\n\n"
@@ -339,6 +359,13 @@ async def iphone_close(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message:
         await callback.message.edit_text("Настройка iPhone закрыта.")
+
+
+@router.callback_query(F.data == "web_login_cancel")
+async def cancel_web_login(callback: CallbackQuery) -> None:
+    await callback.answer("Вход отменён")
+    if callback.message:
+        await callback.message.edit_text("Вход на сайт отменён. Никакие данные не были переданы.")
 
 
 @router.message(Command("cancel"))

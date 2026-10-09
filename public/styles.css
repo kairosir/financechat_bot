@@ -1326,13 +1326,20 @@ dialog select:focus {
     align-items: center;
     justify-content: center;
     gap: 9px;
+    border: 0;
     border-radius: 14px;
     background: #229ed9;
     color: #fff;
     font-size: 15px;
     font-weight: 750;
     text-decoration: none;
+    font-family: inherit;
+    cursor: pointer;
     box-shadow: 0 10px 24px rgba(34, 158, 217, 0.24);
+  }
+  .telegram-mobile-login:disabled {
+    opacity: 0.72;
+    cursor: wait;
   }
   .telegram-mobile-login span {
     font-size: 18px;

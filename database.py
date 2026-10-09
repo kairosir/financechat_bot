@@ -281,6 +281,24 @@ class Database:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_login_requests (
+                    token_hash TEXT PRIMARY KEY,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'approved')),
+                    user_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    approved_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_telegram_login_requests_expires
+                ON telegram_login_requests(expires_at)
+                """
+            )
 
     def _initialize_postgres_sync(self) -> None:
         statements = [
@@ -369,6 +387,17 @@ class Database:
                 created_at TEXT NOT NULL
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS telegram_login_requests (
+                token_hash TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK(status IN ('pending', 'approved')),
+                user_id BIGINT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                approved_at TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_telegram_login_requests_expires ON telegram_login_requests(expires_at)",
         ]
         with self._connect() as connection:
             for statement in statements:
@@ -1103,6 +1132,74 @@ class Database:
                     (token_hash,),
                 ).fetchone()
         return int(row["user_id"]) if row else None
+
+    async def create_telegram_login_request(
+        self,
+        created_at: datetime,
+        expires_at: datetime,
+    ) -> str:
+        token = secrets.token_urlsafe(24)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        await asyncio.to_thread(
+            self._create_telegram_login_request_sync,
+            token_hash,
+            created_at.isoformat(timespec="seconds"),
+            expires_at.isoformat(timespec="seconds"),
+        )
+        return token
+
+    def _create_telegram_login_request_sync(
+        self,
+        token_hash: str,
+        created_at: str,
+        expires_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM telegram_login_requests WHERE expires_at < ?",
+                (created_at,),
+            )
+            connection.execute(
+                """
+                INSERT INTO telegram_login_requests
+                    (token_hash, status, user_id, created_at, expires_at, approved_at)
+                VALUES (?, 'pending', NULL, ?, ?, NULL)
+                """,
+                (token_hash, created_at, expires_at),
+            )
+
+    async def approve_telegram_login_request(
+        self,
+        token: str,
+        user_id: int,
+        approved_at: datetime,
+    ) -> bool:
+        if not token or len(token) > 128:
+            return False
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return await asyncio.to_thread(
+            self._approve_telegram_login_request_sync,
+            token_hash,
+            user_id,
+            approved_at.isoformat(timespec="seconds"),
+        )
+
+    def _approve_telegram_login_request_sync(
+        self,
+        token_hash: str,
+        user_id: int,
+        approved_at: str,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE telegram_login_requests
+                SET status = 'approved', user_id = ?, approved_at = ?
+                WHERE token_hash = ? AND status = 'pending' AND expires_at >= ?
+                """,
+                (user_id, approved_at, token_hash, approved_at),
+            )
+            return cursor.rowcount == 1
 
     async def upsert_user_profile(
         self,

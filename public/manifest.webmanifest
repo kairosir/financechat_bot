@@ -1,0 +1,21 @@
+{
+  "name": "Purpose Finance",
+  "short_name": "Purpose",
+  "description": "Учёт доходов, расходов и счетов",
+  "lang": "ru",
+  "start_url": "/?source=home_screen",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#0f0a19",
+  "theme_color": "#120b24",
+  "icons": [
+    {
+      "src": "/purpose-finance-avatar.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

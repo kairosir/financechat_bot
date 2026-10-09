@@ -366,6 +366,45 @@ async def telegram_login(request: Request, response: Response) -> dict[str, obje
     return {"ok": True, "user_id": user_id}
 
 
+@app.post("/api/auth/telegram/start")
+async def start_telegram_login() -> dict[str, object]:
+    bot_username = await telegram_bot_username()
+    if not bot_username:
+        raise HTTPException(status_code=503, detail="Вход через Telegram временно недоступен")
+    await ensure_initialized()
+    now = datetime.now(TIMEZONE)
+    token = await db.create_telegram_login_request(now, now + timedelta(minutes=10))
+    return {
+        "ok": True,
+        "expires_in": 600,
+        "telegram_url": f"https://t.me/{bot_username}?start=weblogin_{token}",
+    }
+
+
+@app.post("/api/auth/telegram/approve")
+async def approve_telegram_login(request: Request, response: Response) -> dict[str, object]:
+    user_id = verify_telegram_init_data(
+        request.headers.get("X-Telegram-Init-Data", "")
+    )
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Откройте подтверждение внутри Telegram")
+    payload = await request.json()
+    token = str(payload.get("token", "")) if isinstance(payload, dict) else ""
+    await ensure_initialized()
+    if not await db.approve_telegram_login_request(token, user_id, datetime.now(TIMEZONE)):
+        raise HTTPException(status_code=410, detail="Ссылка входа истекла. Начните вход заново")
+    response.set_cookie(
+        TELEGRAM_SESSION_COOKIE,
+        create_telegram_session(user_id),
+        max_age=TELEGRAM_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True, "user_id": user_id}
+
+
 @app.post("/api/auth/telegram/logout")
 async def telegram_logout(response: Response) -> dict[str, bool]:
     response.delete_cookie(
@@ -555,6 +594,7 @@ async def dashboard(
 @app.get("/api/v1/shortcut/options")
 async def options(request: Request, kind: str = "expense") -> dict[str, object]:
     user_id = await authorized_user(request)
+    kind = {"Расход": "expense", "Доход": "income"}.get(kind, kind)
     if kind not in {"expense", "income"}:
         raise HTTPException(status_code=400, detail="Неизвестный тип операции")
     defaults = EXPENSE_CATEGORIES if kind == "expense" else INCOME_CATEGORIES
@@ -591,7 +631,21 @@ async def options(request: Request, kind: str = "expense") -> dict[str, object]:
 async def create_transaction(request: Request) -> dict[str, object]:
     user_id = await authorized_user(request)
     payload = await request.json()
+    return await create_transaction_from_payload(user_id, payload)
+
+
+@app.get("/api/v1/shortcut/add")
+async def create_transaction_from_shortcut(request: Request) -> dict[str, object]:
+    user_id = await authorized_user(request)
+    return await create_transaction_from_payload(user_id, dict(request.query_params))
+
+
+async def create_transaction_from_payload(
+    user_id: int,
+    payload: dict[str, object],
+) -> dict[str, object]:
     kind = str(payload.get("kind", ""))
+    kind = {"Расход": "expense", "Доход": "income"}.get(kind, kind)
     if kind not in {"expense", "income"}:
         raise HTTPException(status_code=400, detail="Выберите расход или доход")
     amount_minor = parse_amount(payload.get("amount", ""))

@@ -4,8 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
   <meta name="theme-color" content="#120b24">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Purpose">
   <meta name="description" content="Purpose Finance — понятный учёт доходов и расходов">
   <title>Purpose Finance</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/purpose-finance-avatar.png">
   <link rel="stylesheet" href="/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script defer src="/auth-client.js"></script>
@@ -41,9 +47,9 @@
         <div id="telegramLoginBlock" class="telegram-login-block hidden">
           <div class="auth-separator"><span>или</span></div>
           <div id="telegramLoginWidget" class="telegram-login-widget"></div>
-          <a id="telegramMobileLogin" class="telegram-mobile-login" href="#">
+          <button id="telegramMobileLogin" class="telegram-mobile-login" type="button">
             <span aria-hidden="true">➤</span> Войти через Telegram
-          </a>
+          </button>
           <p id="telegramLoginStatus" class="form-status"></p>
         </div>
         <div class="telegram-auth-note">В Telegram авторизация происходит автоматически — без отдельного пароля.</div>

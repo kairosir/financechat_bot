@@ -67,6 +67,22 @@ def web_app_keyboard(url: str) -> InlineKeyboardMarkup:
     )
 
 
+def telegram_login_confirm_keyboard(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить и открыть",
+                    web_app=WebAppInfo(url=url),
+                )
+            ],
+            [InlineKeyboardButton(text="✕ Отмена", callback_data="web_login_cancel")],
+        ]
+    )
+
+
+
+
 def categories_keyboard(
     kind: str,
     custom_categories: list[tuple[int, str]],

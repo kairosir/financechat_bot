@@ -172,6 +172,38 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.database.add_shortcut_token_alias(second, alias, now))
         self.assertEqual(await self.database.user_by_shortcut_token(alias), 42)
 
+    async def test_telegram_login_request_is_single_use_and_expires(self) -> None:
+        now = datetime(2026, 10, 9, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        token = await self.database.create_telegram_login_request(
+            now,
+            now + timedelta(minutes=10),
+        )
+        self.assertTrue(
+            await self.database.approve_telegram_login_request(
+                token,
+                42,
+                now + timedelta(minutes=1),
+            )
+        )
+        self.assertFalse(
+            await self.database.approve_telegram_login_request(
+                token,
+                7,
+                now + timedelta(minutes=2),
+            )
+        )
+        expired = await self.database.create_telegram_login_request(
+            now,
+            now + timedelta(minutes=1),
+        )
+        self.assertFalse(
+            await self.database.approve_telegram_login_request(
+                expired,
+                42,
+                now + timedelta(minutes=2),
+            )
+        )
+
     async def test_accounts_balances_transfer_and_undo(self) -> None:
         now = datetime(2026, 10, 3, 12, 30, tzinfo=ZoneInfo("Asia/Almaty"))
         cash = await self.database.add_account(

@@ -40,7 +40,21 @@ async function api(path, options = {}) {
 function renderTelegramLogin(botUsername) {
   if (!botUsername || initData) return;
   const normalizedUsername = String(botUsername).replace(/^@/, '');
-  $('telegramMobileLogin').href = `https://t.me/${encodeURIComponent(normalizedUsername)}?startapp=website_login`;
+  $('telegramMobileLogin').onclick = async () => {
+    const button = $('telegramMobileLogin');
+    button.disabled = true;
+    $('telegramLoginStatus').textContent = 'Создаём безопасную ссылку…';
+    try {
+      const response = await fetch('/api/auth/telegram/start', {method:'POST'});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.telegram_url) throw new Error(data.detail || 'Не удалось открыть Telegram');
+      $('telegramLoginStatus').textContent = 'Подтвердите вход в чате с ботом';
+      location.href = data.telegram_url;
+    } catch (error) {
+      $('telegramLoginStatus').textContent = error.message || String(error);
+      button.disabled = false;
+    }
+  };
   const container = $('telegramLoginWidget');
   container.replaceChildren();
   const script = document.createElement('script');
@@ -303,6 +317,20 @@ $('adminButton').onclick = openAdmin;
 $('closeAdmin').onclick = () => $('adminDialog').close();
 
 async function boot() {
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+  const loginRequest = new URLSearchParams(location.search).get('login_request');
+  if (loginRequest && initData) {
+    try {
+      await fetch('/api/auth/telegram/approve', {
+        method:'POST',
+        headers:{'Content-Type':'application/json', 'X-Telegram-Init-Data':initData},
+        body:JSON.stringify({token:loginRequest}),
+      });
+      const cleanUrl = new URL(location.href);
+      cleanUrl.searchParams.delete('login_request');
+      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+    } catch (_) {}
+  }
   try {
     const config = await fetch('/api/config').then(response => response.json());
     if (config.auth_enabled && window.PurposeAuthBundle?.createClient) {
