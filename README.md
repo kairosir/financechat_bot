@@ -61,6 +61,7 @@ python bot.py
 | `TELEGRAM_WEBHOOK_SECRET` | Секрет проверки Telegram webhook | обязательна в production |
 | `NEON_AUTH_BASE_URL` | Адрес Managed Neon Auth | обязательна для веб-входа |
 | `NEON_AUTH_JWKS_URL` | Ключи проверки токенов Neon Auth | обязательна для веб-входа |
+| `NEON_AUTH_ISSUER` | Issuer токенов Neon Auth | определяется автоматически |
 | `ADMIN_TELEGRAM_IDS` | Telegram ID администраторов через запятую | пусто |
 
 ## Быстрая запись с iPhone

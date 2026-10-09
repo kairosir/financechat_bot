@@ -8,7 +8,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 from typing import Optional
 
@@ -34,6 +34,12 @@ WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TIMEZONE = ZoneInfo(os.getenv("BOT_TIMEZONE", "Asia/Almaty"))
 NEON_AUTH_BASE_URL = os.getenv("NEON_AUTH_BASE_URL", "").strip().rstrip("/")
 NEON_AUTH_JWKS_URL = os.getenv("NEON_AUTH_JWKS_URL", "").strip()
+_auth_url_parts = urlsplit(NEON_AUTH_BASE_URL)
+NEON_AUTH_ISSUER = os.getenv("NEON_AUTH_ISSUER", "").strip().rstrip("/") or (
+    f"{_auth_url_parts.scheme}://{_auth_url_parts.netloc}"
+    if _auth_url_parts.scheme and _auth_url_parts.netloc
+    else ""
+)
 ADMIN_IDS = {
     int(value.strip())
     for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
@@ -118,7 +124,7 @@ async def authorized_user(request: Request) -> int:
 
 
 async def verify_neon_auth_token(token: str) -> str | None:
-    if not _jwks_client or not NEON_AUTH_BASE_URL:
+    if not _jwks_client or not NEON_AUTH_ISSUER:
         return None
     try:
         signing_key = await asyncio.to_thread(_jwks_client.get_signing_key_from_jwt, token)
@@ -126,7 +132,7 @@ async def verify_neon_auth_token(token: str) -> str | None:
             token,
             signing_key.key,
             algorithms=["EdDSA"],
-            issuer=NEON_AUTH_BASE_URL,
+            issuer=NEON_AUTH_ISSUER,
             options={"verify_aud": False},
         )
     except (InvalidTokenError, PyJWKClientError, ValueError):
