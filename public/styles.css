@@ -552,7 +552,68 @@ dialog input:focus {
 
 .password-toggle.visible { color: var(--accent); }
 
-.profile-copy > p { color: var(--muted); line-height: 1.5; }
+.profile-copy {
+  display: grid;
+  gap: 14px;
+}
+.profile-section {
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.profile-section p { color: var(--muted); line-height: 1.5; }
+.profile-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.profile-section-head h4 {
+  margin: 3px 0 0;
+  font-size: 17px;
+}
+.profile-section-head > span { font-size: 22px; }
+.profile-email {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.profile-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.profile-form label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.profile-form input:not([type="checkbox"]) {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  padding: 13px 14px;
+  border: 1px solid #49375c;
+  border-radius: 13px;
+  background: #100a19;
+  color: white;
+  font: inherit;
+  outline: none;
+}
+.profile-form input:focus { border-color: #9f7aea; }
+.profile-form .profile-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.profile-form .profile-checkbox input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
 .telegram-link-state {
   margin: 18px 0;
   padding: 16px;
@@ -562,6 +623,9 @@ dialog input:focus {
 .telegram-link-state strong,
 .telegram-link-state small { display: block; }
 .telegram-link-state small { margin-top: 5px; color: var(--muted); }
+.profile-section .primary-button,
+.profile-section .subtle-button,
+.profile-section .danger-button { margin-top: 9px; }
 .danger-button {
   width: 100%;
   min-height: 48px;
@@ -1326,6 +1390,10 @@ dialog select:focus {
     border-color: #e2d9e4;
     background: #fff;
     color: #211b24;
+  }
+  .profile-section {
+    border-color: #e5dde7;
+    background: #faf8fb;
   }
   dialog::backdrop,
   .backdrop {

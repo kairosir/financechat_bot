@@ -69,7 +69,7 @@
       </section>
 
       <div class="dashboard-actions">
-        <button id="profileButton" class="updates-button hidden">👤 Профиль</button>
+        <button id="profileButton" class="updates-button hidden">👤 Личный кабинет</button>
         <button id="adminButton" class="updates-button hidden">🛡 Пользователи</button>
         <button id="whatsNewButton" class="updates-button">✨ Что нового?</button>
         <button id="signOutButton" class="updates-button hidden">Выйти</button>
@@ -149,13 +149,32 @@
   </dialog>
 
   <dialog id="profileDialog" class="updates-dialog profile-dialog">
-    <div class="dialog-head"><div><span class="eyebrow">Единый аккаунт</span><h3>Профиль</h3></div><button id="closeProfile" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
+    <div class="dialog-head"><div><span class="eyebrow">Настройки аккаунта</span><h3>Личный кабинет</h3></div><button id="closeProfile" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
     <div class="profile-copy">
-      <p>Привяжите Telegram, чтобы сайт, Mini App и бот показывали одни счета и операции.</p>
-      <div id="telegramLinkState" class="telegram-link-state"><span class="loader"></span></div>
-      <button id="linkTelegramButton" class="primary-button" type="button">Привязать Telegram</button>
-      <button id="unlinkTelegramButton" class="danger-button hidden" type="button">Отвязать Telegram</button>
-      <p id="profileStatus" class="form-status"></p>
+      <section class="profile-section">
+        <span class="eyebrow">Ваш аккаунт</span>
+        <strong id="profileEmail" class="profile-email">Email-аккаунт</strong>
+      </section>
+      <section class="profile-section">
+        <div class="profile-section-head"><div><span class="eyebrow">Синхронизация</span><h4>Telegram</h4></div><span aria-hidden="true">✈️</span></div>
+        <p>Привяжите аккаунт через бота, чтобы сайт, Mini App и Telegram показывали одни счета и операции.</p>
+        <div id="telegramLinkState" class="telegram-link-state"><span class="loader"></span></div>
+        <button id="linkTelegramButton" class="primary-button" type="button">Привязать Telegram через бота</button>
+        <button id="checkTelegramLinkButton" class="subtle-button" type="button">Проверить подтверждение</button>
+        <button id="unlinkTelegramButton" class="danger-button hidden" type="button">Отвязать Telegram</button>
+        <p id="profileStatus" class="form-status"></p>
+      </section>
+      <section class="profile-section">
+        <div class="profile-section-head"><div><span class="eyebrow">Безопасность</span><h4>Смена пароля</h4></div><span aria-hidden="true">🔐</span></div>
+        <form id="changePasswordForm" class="profile-form">
+          <label>Текущий пароль<span class="password-field"><input id="currentPassword" type="password" minlength="8" autocomplete="current-password" required><button type="button" class="password-toggle" data-password-toggle="currentPassword" aria-label="Показать пароль">👁</button></span></label>
+          <label>Новый пароль<span class="password-field"><input id="newPassword" type="password" minlength="8" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="newPassword" aria-label="Показать пароль">👁</button></span></label>
+          <label>Повторите новый пароль<span class="password-field"><input id="newPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="newPasswordConfirm" aria-label="Показать пароль">👁</button></span></label>
+          <label class="profile-checkbox"><input id="revokeOtherSessions" type="checkbox" checked> Выйти из аккаунта на других устройствах</label>
+          <button id="changePasswordSubmit" class="primary-button" type="submit">Изменить пароль</button>
+          <p id="changePasswordStatus" class="form-status"></p>
+        </form>
+      </section>
     </div>
   </dialog>
 
@@ -168,6 +187,7 @@
     <form id="resetForm">
       <div class="dialog-head"><h3>Новый пароль</h3><button id="closeReset" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
       <label>Новый пароль<span class="password-field"><input id="resetPassword" type="password" minlength="8" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="resetPassword" aria-label="Показать пароль">👁</button></span></label>
+      <label>Повторите пароль<span class="password-field"><input id="resetPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="resetPasswordConfirm" aria-label="Показать пароль">👁</button></span></label>
       <button class="primary-button" type="submit">Сохранить пароль</button>
       <p id="resetStatus" class="form-status"></p>
     </form>

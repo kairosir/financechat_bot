@@ -12,6 +12,8 @@ let telegramLinkToken = '';
 let telegramLinkPoll = null;
 const INACTIVITY_LIMIT_MS = 3 * 24 * 60 * 60 * 1000;
 const LAST_ACTIVITY_KEY = 'purpose_finance_last_activity';
+const TELEGRAM_LINK_KEY = 'purpose_finance_telegram_link';
+const AUTH_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 let activityTracking = false;
 let lastActivityWrite = 0;
 let lastSessionKeepalive = 0;
@@ -36,13 +38,32 @@ const mobileDate = new Intl.DateTimeFormat('ru-RU', {month:'long', year:'numeric
 $('mobileDate').textContent = mobileDate.charAt(0).toUpperCase() + mobileDate.slice(1);
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {...authHeaders(), ...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})},
-  });
+  if (authClient && authSession && authTokenExpiresSoon(authToken)) {
+    await refreshAuthToken({attempts:2});
+  }
+  const request = () => fetch(path, {
+      ...options,
+      headers: {...authHeaders(), ...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})},
+    });
+  let response = await request();
+  if (response.status === 401 && authClient && authSession) {
+    const refreshed = await refreshAuthToken({attempts:2});
+    if (refreshed) response = await request();
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
   return data;
+}
+
+function authTokenExpiresSoon(value, thresholdMs = 30000) {
+  if (!value || value.split('.').length !== 3) return true;
+  try {
+    const encoded = value.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')));
+    return !payload.exp || payload.exp * 1000 - Date.now() <= thresholdMs;
+  } catch (_) {
+    return true;
+  }
 }
 
 function storedLastActivity() {
@@ -61,7 +82,7 @@ function rememberActivity(force = false) {
   if (!force && now - lastActivityWrite < 30000) return;
   lastActivityWrite = now;
   localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
-  if (now - lastSessionKeepalive >= 6 * 60 * 60 * 1000) {
+  if (now - lastSessionKeepalive >= AUTH_REFRESH_INTERVAL_MS) {
     lastSessionKeepalive = now;
     Promise.resolve(authClient ? refreshAuthToken() : true)
       .then(() => fetch('/api/me', {headers:authHeaders()}))
@@ -84,6 +105,7 @@ async function signOutEverywhere({inactive = false} = {}) {
   } finally {
     authSession = null; authToken = ''; viewOwnerId = null;
     localStorage.removeItem(LAST_ACTIVITY_KEY);
+    clearTelegramLinkRequest();
     inactivityLogoutRunning = false;
   }
   await refresh();
@@ -188,6 +210,17 @@ function renderDashboard(data) {
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+
+function friendlyAuthError(error, fallback = 'Не удалось выполнить вход') {
+  const message = String(error?.message || error || '').trim();
+  const normalized = message.toLowerCase();
+  if (normalized.includes('invalid email or password') || normalized.includes('invalid password')) return 'Неверный email или пароль';
+  if (normalized.includes('user already exists') || normalized.includes('already registered')) return 'Аккаунт с таким email уже существует';
+  if (normalized.includes('password') && normalized.includes('too short')) return 'Пароль должен содержать не менее 8 символов';
+  if (normalized.includes('current password')) return 'Текущий пароль указан неверно';
+  if (normalized.includes('too many')) return 'Слишком много попыток. Подождите немного и повторите.';
+  return message || fallback;
 }
 
 async function refresh({throwOnError = false} = {}) {
@@ -314,8 +347,8 @@ async function refreshAuthToken({attempts = 1} = {}) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const sessionResult = await authClient.getSession();
     authSession = sessionResult?.data?.user ? sessionResult.data : null;
-    authToken = authSession?.session?.token || '';
-    if (authToken) return true;
+    authToken = '';
+    if (!authSession) return false;
     if (authSession && typeof authClient.token === 'function') {
       try {
         const tokenResult = await authClient.token();
@@ -323,6 +356,8 @@ async function refreshAuthToken({attempts = 1} = {}) {
       } catch (_) {}
       if (authToken) return true;
     }
+    authToken = authSession?.session?.token || '';
+    if (authToken) return true;
     if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 250));
   }
   if (!authSession) authToken = '';
@@ -356,7 +391,7 @@ $('authForm').onsubmit = async event => {
   if (!authClient) { $('authStatus').textContent = 'Вход по email пока недоступен'; return; }
   $('authSubmit').disabled = true; $('authStatus').textContent = authMode === 'signup' ? 'Создаём аккаунт…' : 'Входим…';
   try {
-    const credentials = {email:$('authEmail').value.trim(), password:$('authPassword').value};
+    const credentials = {email:$('authEmail').value.trim().toLowerCase(), password:$('authPassword').value};
     if (authMode === 'signup' && credentials.password !== $('authPasswordConfirm').value) {
       throw new Error('Пароли не совпадают');
     }
@@ -364,20 +399,21 @@ $('authForm').onsubmit = async event => {
     const result = signingUp
       ? await authClient.signUp.email({...credentials, name:$('authName').value.trim() || credentials.email.split('@')[0]})
       : await authClient.signIn.email(credentials);
-    if (result?.error) throw new Error(result.error.message || 'Не удалось войти');
+    if (result?.error) throw new Error(friendlyAuthError(result.error));
     applyAuthResult(result);
     if (!authToken) await refreshAuthToken({attempts:3});
     if (!authToken && signingUp) {
       const signInResult = await authClient.signIn.email(credentials);
-      if (signInResult?.error) throw new Error(signInResult.error.message || 'Аккаунт создан. Выполните вход.');
+      if (signInResult?.error) throw new Error(friendlyAuthError(signInResult.error, 'Аккаунт создан. Выполните вход.'));
       applyAuthResult(signInResult);
       if (!authToken) await refreshAuthToken({attempts:3});
     }
     if (!authToken) throw new Error('Не удалось открыть сессию. Обновите страницу и попробуйте войти ещё раз.');
+    await api('/api/auth/session');
     rememberActivity(true); startActivityTracking();
     await refresh({throwOnError:true});
     $('authStatus').textContent = '✓ Готово';
-  } catch (error) { $('authStatus').textContent = error.message || String(error); }
+  } catch (error) { $('authStatus').textContent = friendlyAuthError(error); }
   finally { $('authSubmit').disabled = false; }
 };
 
@@ -395,7 +431,9 @@ $('resetForm').onsubmit = async event => {
   event.preventDefault();
   const resetToken = new URLSearchParams(location.search).get('token') || '';
   try {
-    const result = await authClient.resetPassword({newPassword:$('resetPassword').value, token:resetToken});
+    const newPassword = $('resetPassword').value;
+    if (newPassword !== $('resetPasswordConfirm').value) throw new Error('Пароли не совпадают');
+    const result = await authClient.resetPassword({newPassword, token:resetToken});
     if (result?.error) throw new Error(result.error.message || 'Не удалось изменить пароль');
     $('resetStatus').textContent = '✓ Пароль изменён. Теперь можно войти.';
     history.replaceState({}, '', '/');
@@ -416,7 +454,40 @@ function renderTelegramLink(profile) {
     $('telegramLinkState').innerHTML = '<strong>Telegram не привязан</strong><small>Данные сайта пока отделены от бота</small>';
   }
   $('linkTelegramButton').classList.toggle('hidden', Boolean(linked));
+  $('linkTelegramButton').disabled = false;
   $('unlinkTelegramButton').classList.toggle('hidden', !linked);
+}
+
+function storeTelegramLinkRequest(tokenValue, expiresIn = 600) {
+  telegramLinkToken = tokenValue;
+  localStorage.setItem(TELEGRAM_LINK_KEY, JSON.stringify({token:tokenValue, expiresAt:Date.now() + expiresIn * 1000}));
+}
+
+function restoreTelegramLinkRequest() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TELEGRAM_LINK_KEY) || 'null');
+    if (!saved?.token || Number(saved.expiresAt) <= Date.now()) {
+      clearTelegramLinkRequest();
+      return false;
+    }
+    telegramLinkToken = String(saved.token);
+    return true;
+  } catch (_) {
+    clearTelegramLinkRequest();
+    return false;
+  }
+}
+
+function clearTelegramLinkRequest() {
+  telegramLinkToken = '';
+  localStorage.removeItem(TELEGRAM_LINK_KEY);
+  clearInterval(telegramLinkPoll);
+  telegramLinkPoll = null;
+}
+
+function startTelegramLinkPolling() {
+  clearInterval(telegramLinkPoll);
+  telegramLinkPoll = setInterval(checkTelegramLink, 2000);
 }
 
 async function loadProfile() {
@@ -430,11 +501,11 @@ async function checkTelegramLink() {
   try {
     const status = await api(`/api/profile/telegram/link/status?token=${encodeURIComponent(telegramLinkToken)}`);
     if (status.status === 'approved') {
-      clearInterval(telegramLinkPoll); telegramLinkPoll = null; telegramLinkToken = '';
+      clearTelegramLinkRequest();
       $('profileStatus').textContent = '✓ Telegram привязан, данные синхронизированы';
       await loadProfile(); await refresh();
     } else if (status.status === 'expired') {
-      clearInterval(telegramLinkPoll); telegramLinkPoll = null; telegramLinkToken = '';
+      clearTelegramLinkRequest();
       $('profileStatus').textContent = 'Ссылка истекла. Нажмите «Привязать» ещё раз.';
       $('linkTelegramButton').disabled = false;
     }
@@ -446,8 +517,16 @@ async function checkTelegramLink() {
 async function openProfile() {
   $('profileDialog').showModal();
   $('profileStatus').textContent = '';
+  $('profileEmail').textContent = authSession?.user?.email || 'Email-аккаунт';
   $('telegramLinkState').innerHTML = '<span class="loader"></span>';
-  try { await loadProfile(); }
+  try {
+    await loadProfile();
+    if (restoreTelegramLinkRequest()) {
+      $('profileStatus').textContent = 'Ожидаем подтверждение в Telegram…';
+      startTelegramLinkPolling();
+      await checkTelegramLink();
+    }
+  }
   catch (error) { $('telegramLinkState').innerHTML = `<strong>${escapeHtml(error.message)}</strong>`; }
 }
 
@@ -458,15 +537,22 @@ $('linkTelegramButton').onclick = async () => {
   $('profileStatus').textContent = 'Создаём безопасный запрос…';
   try {
     const data = await api('/api/profile/telegram/link/start', {method:'POST'});
-    telegramLinkToken = data.token;
+    storeTelegramLinkRequest(data.token, data.expires_in || 600);
     $('profileStatus').textContent = 'Подтвердите привязку в чате с ботом, затем вернитесь сюда';
-    clearInterval(telegramLinkPoll);
-    telegramLinkPoll = setInterval(checkTelegramLink, 2000);
+    startTelegramLinkPolling();
     location.href = data.telegram_url;
   } catch (error) {
     $('profileStatus').textContent = error.message || String(error);
     button.disabled = false;
   }
+};
+$('checkTelegramLinkButton').onclick = async () => {
+  if (!restoreTelegramLinkRequest()) {
+    $('profileStatus').textContent = 'Нет активного запроса. Нажмите «Привязать Telegram».';
+    return;
+  }
+  $('profileStatus').textContent = 'Проверяем подтверждение…';
+  await checkTelegramLink();
 };
 $('unlinkTelegramButton').onclick = async () => {
   if (!confirm('Отвязать Telegram? Данные останутся на сайте, а бот начнёт с отдельного профиля.')) return;
@@ -478,6 +564,41 @@ $('unlinkTelegramButton').onclick = async () => {
     await loadProfile(); await refresh();
   } catch (error) { $('profileStatus').textContent = error.message || String(error); }
   finally { button.disabled = false; }
+};
+
+$('changePasswordForm').onsubmit = async event => {
+  event.preventDefault();
+  const button = $('changePasswordSubmit');
+  const currentPassword = $('currentPassword').value;
+  const newPassword = $('newPassword').value;
+  const confirmation = $('newPasswordConfirm').value;
+  if (newPassword !== confirmation) {
+    $('changePasswordStatus').textContent = 'Пароли не совпадают';
+    return;
+  }
+  if (currentPassword === newPassword) {
+    $('changePasswordStatus').textContent = 'Новый пароль должен отличаться от текущего';
+    return;
+  }
+  button.disabled = true;
+  $('changePasswordStatus').textContent = 'Меняем пароль…';
+  try {
+    const result = await authClient.changePassword({
+      currentPassword,
+      newPassword,
+      revokeOtherSessions:$('revokeOtherSessions').checked,
+    });
+    if (result?.error) throw new Error(friendlyAuthError(result.error, 'Не удалось изменить пароль'));
+    applyAuthResult(result);
+    await refreshAuthToken({attempts:3});
+    event.currentTarget.reset();
+    $('revokeOtherSessions').checked = true;
+    $('changePasswordStatus').textContent = '✓ Пароль изменён';
+  } catch (error) {
+    $('changePasswordStatus').textContent = friendlyAuthError(error, 'Не удалось изменить пароль');
+  } finally {
+    button.disabled = false;
+  }
 };
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && telegramLinkToken) checkTelegramLink();
@@ -534,6 +655,10 @@ async function boot() {
   await refresh();
   if (!$('dashboard').classList.contains('hidden') && !initData && !token) {
     startActivityTracking();
+    if (restoreTelegramLinkRequest()) {
+      startTelegramLinkPolling();
+      checkTelegramLink().catch(() => {});
+    }
   }
 }
 

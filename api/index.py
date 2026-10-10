@@ -345,6 +345,12 @@ async def public_config() -> dict[str, object]:
     }
 
 
+@app.get("/api/auth/session")
+async def validate_auth_session(request: Request) -> dict[str, bool]:
+    await neon_auth_subject(request)
+    return {"ok": True}
+
+
 @app.post("/api/auth/telegram")
 async def telegram_login(request: Request, response: Response) -> dict[str, object]:
     payload = await request.json()
