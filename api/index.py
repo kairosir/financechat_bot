@@ -199,8 +199,6 @@ async def authorized_user(request: Request) -> int:
     if scheme.lower() == "bearer" and token.count(".") == 2:
         auth_subject = await verify_neon_auth_token(token)
     if telegram_user_id is not None:
-        if auth_subject:
-            await db.bind_auth_identity(auth_subject, telegram_user_id, datetime.now(TIMEZONE))
         return telegram_user_id
     if auth_subject:
         return await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
@@ -219,6 +217,16 @@ async def authorized_user(request: Request) -> int:
         if user_id is not None:
             return user_id
     raise HTTPException(status_code=401, detail="Откройте приложение через Purpose Finance")
+
+
+async def neon_auth_subject(request: Request) -> str:
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or token.count(".") != 2:
+        raise HTTPException(status_code=401, detail="Войдите по email")
+    subject = await verify_neon_auth_token(token)
+    if not subject:
+        raise HTTPException(status_code=401, detail="Сессия истекла. Войдите заново")
+    return subject
 
 
 async def verify_neon_auth_token(token: str) -> str | None:
@@ -430,6 +438,59 @@ async def me(request: Request) -> dict[str, object]:
         "is_admin": is_admin(user_id),
         "can_sign_out": can_sign_out,
     }
+
+
+@app.get("/api/profile")
+async def profile(request: Request) -> dict[str, object]:
+    auth_subject = await neon_auth_subject(request)
+    await ensure_initialized()
+    await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
+    telegram = await db.telegram_link_for_auth(auth_subject)
+    return {"ok": True, "telegram": telegram}
+
+
+@app.post("/api/profile/telegram/link/start")
+async def start_telegram_link(request: Request) -> dict[str, object]:
+    auth_subject = await neon_auth_subject(request)
+    bot_username = await telegram_bot_username()
+    if not bot_username:
+        raise HTTPException(status_code=503, detail="Telegram-бот временно недоступен")
+    await ensure_initialized()
+    await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
+    if await db.telegram_link_for_auth(auth_subject):
+        raise HTTPException(status_code=409, detail="Telegram уже привязан")
+    now = datetime.now(TIMEZONE)
+    token = await db.create_telegram_link_request(
+        auth_subject,
+        now,
+        now + timedelta(minutes=10),
+    )
+    return {
+        "ok": True,
+        "token": token,
+        "expires_in": 600,
+        "telegram_url": f"https://t.me/{bot_username}?start=tglink_{token}",
+    }
+
+
+@app.get("/api/profile/telegram/link/status")
+async def telegram_link_status(request: Request, token: str) -> dict[str, object]:
+    auth_subject = await neon_auth_subject(request)
+    await ensure_initialized()
+    status = await db.telegram_link_request_status(token, auth_subject, datetime.now(TIMEZONE))
+    if status is None:
+        raise HTTPException(status_code=404, detail="Запрос привязки не найден")
+    return {"ok": True, **status}
+
+
+@app.post("/api/profile/telegram/unlink")
+async def unlink_telegram(request: Request) -> dict[str, object]:
+    auth_subject = await neon_auth_subject(request)
+    await ensure_initialized()
+    user_id = await db.unlink_telegram_auth(auth_subject)
+    if user_id is None:
+        raise HTTPException(status_code=409, detail="Telegram не привязан")
+    return {"ok": True, "user_id": user_id}
 
 
 @app.get("/api/admin/users")

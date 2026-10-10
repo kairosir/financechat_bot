@@ -44,6 +44,7 @@ from keyboards import (
     manage_kind_keyboard,
     note_keyboard,
     summary_keyboard,
+    telegram_account_link_keyboard,
     telegram_login_confirm_keyboard,
     transfer_account_keyboard,
     web_app_keyboard,
@@ -281,6 +282,19 @@ async def command_start(message: Message, state: FSMContext) -> None:
             ) if public_base_url else None,
         )
         return
+    if start_parameter.startswith("tglink_"):
+        token = start_parameter.removeprefix("tglink_")
+        if not token or len(token) > 48:
+            await message.answer("Ссылка привязки повреждена. Вернитесь на сайт и попробуйте ещё раз.")
+            return
+        await message.answer(
+            "<b>Привязка Telegram к сайту</b>\n\n"
+            "После подтверждения сайт, Mini App и этот бот будут показывать одни "
+            "и те же счета и операции.\n\n"
+            "Если вы не начинали привязку в профиле — нажмите «Отмена».",
+            reply_markup=telegram_account_link_keyboard(token),
+        )
+        return
     name = html.escape(message.from_user.first_name) if message.from_user else ""
     await message.answer(
         f"Привет, {name}! 👋\n\n"
@@ -366,6 +380,40 @@ async def cancel_web_login(callback: CallbackQuery) -> None:
     await callback.answer("Вход отменён")
     if callback.message:
         await callback.message.edit_text("Вход на сайт отменён. Никакие данные не были переданы.")
+
+
+@router.callback_query(F.data.startswith("tg_link_confirm:"))
+async def confirm_telegram_account_link(callback: CallbackQuery) -> None:
+    token = (callback.data or "").removeprefix("tg_link_confirm:")
+    if not callback.from_user:
+        await callback.answer("Не удалось определить аккаунт", show_alert=True)
+        return
+    result = await db.confirm_telegram_link_request(
+        token,
+        callback.from_user.id,
+        datetime.now(timezone),
+    )
+    if result == "approved":
+        if callback.message:
+            await callback.message.edit_text(
+                "<b>Telegram привязан ✓</b>\n\n"
+                "Вернитесь на сайт — страница обновится автоматически. Теперь сайт, "
+                "Mini App и бот используют одни данные."
+            )
+        await callback.answer("Готово")
+        return
+    messages = {
+        "already_linked": "Этот Telegram уже привязан к другому аккаунту.",
+        "expired": "Ссылка устарела. Создайте новую в профиле сайта.",
+    }
+    await callback.answer(messages.get(result, "Не удалось выполнить привязку"), show_alert=True)
+
+
+@router.callback_query(F.data == "tg_link_cancel")
+async def cancel_telegram_account_link(callback: CallbackQuery) -> None:
+    if callback.message:
+        await callback.message.edit_text("Привязка Telegram отменена.")
+    await callback.answer("Отменено")
 
 
 @router.message(Command("cancel"))

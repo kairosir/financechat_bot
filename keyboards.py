@@ -81,6 +81,20 @@ def telegram_login_confirm_keyboard(url: str) -> InlineKeyboardMarkup:
     )
 
 
+def telegram_account_link_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Привязать Telegram",
+                    callback_data=f"tg_link_confirm:{token}",
+                )
+            ],
+            [InlineKeyboardButton(text="✕ Отмена", callback_data="tg_link_cancel")],
+        ]
+    )
+
+
 
 
 def categories_keyboard(

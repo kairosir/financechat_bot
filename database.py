@@ -287,12 +287,26 @@ class Database:
                     token_hash TEXT PRIMARY KEY,
                     status TEXT NOT NULL CHECK(status IN ('pending', 'approved')),
                     user_id INTEGER,
+                    request_type TEXT NOT NULL DEFAULT 'login',
+                    auth_subject TEXT,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     approved_at TEXT
                 )
                 """
             )
+            login_request_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(telegram_login_requests)")
+            }
+            if "request_type" not in login_request_columns:
+                connection.execute(
+                    "ALTER TABLE telegram_login_requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'login'"
+                )
+            if "auth_subject" not in login_request_columns:
+                connection.execute(
+                    "ALTER TABLE telegram_login_requests ADD COLUMN auth_subject TEXT"
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_telegram_login_requests_expires
@@ -392,11 +406,15 @@ class Database:
                 token_hash TEXT PRIMARY KEY,
                 status TEXT NOT NULL CHECK(status IN ('pending', 'approved')),
                 user_id BIGINT,
+                request_type TEXT NOT NULL DEFAULT 'login',
+                auth_subject TEXT,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 approved_at TEXT
             )
             """,
+            "ALTER TABLE telegram_login_requests ADD COLUMN IF NOT EXISTS request_type TEXT NOT NULL DEFAULT 'login'",
+            "ALTER TABLE telegram_login_requests ADD COLUMN IF NOT EXISTS auth_subject TEXT",
             "CREATE INDEX IF NOT EXISTS idx_telegram_login_requests_expires ON telegram_login_requests(expires_at)",
         ]
         with self._connect() as connection:
@@ -1162,8 +1180,8 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO telegram_login_requests
-                    (token_hash, status, user_id, created_at, expires_at, approved_at)
-                VALUES (?, 'pending', NULL, ?, ?, NULL)
+                    (token_hash, status, user_id, request_type, auth_subject, created_at, expires_at, approved_at)
+                VALUES (?, 'pending', NULL, 'login', NULL, ?, ?, NULL)
                 """,
                 (token_hash, created_at, expires_at),
             )
@@ -1195,11 +1213,314 @@ class Database:
                 """
                 UPDATE telegram_login_requests
                 SET status = 'approved', user_id = ?, approved_at = ?
-                WHERE token_hash = ? AND status = 'pending' AND expires_at >= ?
+                WHERE token_hash = ? AND request_type = 'login'
+                  AND status = 'pending' AND expires_at >= ?
                 """,
                 (user_id, approved_at, token_hash, approved_at),
             )
             return cursor.rowcount == 1
+
+    async def create_telegram_link_request(
+        self,
+        auth_subject: str,
+        created_at: datetime,
+        expires_at: datetime,
+    ) -> str:
+        if not auth_subject or len(auth_subject) > 255:
+            raise ValueError("Invalid auth subject")
+        token = secrets.token_urlsafe(24)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        await asyncio.to_thread(
+            self._create_telegram_link_request_sync,
+            token_hash,
+            auth_subject,
+            created_at.isoformat(timespec="seconds"),
+            expires_at.isoformat(timespec="seconds"),
+        )
+        return token
+
+    def _create_telegram_link_request_sync(
+        self,
+        token_hash: str,
+        auth_subject: str,
+        created_at: str,
+        expires_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM telegram_login_requests WHERE expires_at < ?",
+                (created_at,),
+            )
+            connection.execute(
+                """
+                DELETE FROM telegram_login_requests
+                WHERE request_type = 'link' AND auth_subject = ? AND status = 'pending'
+                """,
+                (auth_subject,),
+            )
+            connection.execute(
+                """
+                INSERT INTO telegram_login_requests
+                    (token_hash, status, user_id, request_type, auth_subject,
+                     created_at, expires_at, approved_at)
+                VALUES (?, 'pending', NULL, 'link', ?, ?, ?, NULL)
+                """,
+                (token_hash, auth_subject, created_at, expires_at),
+            )
+
+    async def telegram_link_request_status(
+        self,
+        token: str,
+        auth_subject: str,
+        checked_at: datetime,
+    ) -> dict[str, object] | None:
+        if not token or len(token) > 128 or not auth_subject:
+            return None
+        return await asyncio.to_thread(
+            self._telegram_link_request_status_sync,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            auth_subject,
+            checked_at.isoformat(timespec="seconds"),
+        )
+
+    def _telegram_link_request_status_sync(
+        self,
+        token_hash: str,
+        auth_subject: str,
+        checked_at: str,
+    ) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT status, user_id, expires_at
+                FROM telegram_login_requests
+                WHERE token_hash = ? AND request_type = 'link' AND auth_subject = ?
+                """,
+                (token_hash, auth_subject),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["expires_at"]) < checked_at and str(row["status"]) == "pending":
+            return {"status": "expired", "user_id": None}
+        return {
+            "status": str(row["status"]),
+            "user_id": int(row["user_id"]) if row["user_id"] is not None else None,
+        }
+
+    async def confirm_telegram_link_request(
+        self,
+        token: str,
+        telegram_user_id: int,
+        approved_at: datetime,
+    ) -> str:
+        if not token or len(token) > 128 or telegram_user_id <= 0:
+            return "invalid"
+        return await asyncio.to_thread(
+            self._confirm_telegram_link_request_sync,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            telegram_user_id,
+            approved_at.isoformat(timespec="seconds"),
+        )
+
+    def _unique_account_name_sync(
+        self,
+        connection: _Connection,
+        user_id: int,
+        original: str,
+    ) -> str:
+        base = f"{original} (сайт)"
+        candidate = base
+        suffix = 2
+        while connection.execute(
+            "SELECT 1 FROM accounts WHERE user_id = ? AND name = ?",
+            (user_id, candidate),
+        ).fetchone() is not None:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        return candidate
+
+    def _move_user_data_sync(
+        self,
+        connection: _Connection,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> None:
+        if source_user_id == target_user_id:
+            return
+        source_accounts = connection.execute(
+            "SELECT id, name FROM accounts WHERE user_id = ? ORDER BY id",
+            (source_user_id,),
+        ).fetchall()
+        for account in source_accounts:
+            name = str(account["name"])
+            if connection.execute(
+                "SELECT 1 FROM accounts WHERE user_id = ? AND name = ?",
+                (target_user_id, name),
+            ).fetchone() is not None:
+                name = self._unique_account_name_sync(connection, target_user_id, name)
+                connection.execute(
+                    "UPDATE accounts SET name = ? WHERE id = ?",
+                    (name, int(account["id"])),
+                )
+        connection.execute(
+            "UPDATE accounts SET user_id = ? WHERE user_id = ?",
+            (target_user_id, source_user_id),
+        )
+        connection.execute(
+            "UPDATE transactions SET user_id = ? WHERE user_id = ?",
+            (target_user_id, source_user_id),
+        )
+        connection.execute(
+            "UPDATE account_transfers SET user_id = ? WHERE user_id = ?",
+            (target_user_id, source_user_id),
+        )
+        duplicate_categories = connection.execute(
+            """
+            SELECT source.id
+            FROM custom_categories source
+            WHERE source.user_id = ? AND EXISTS (
+                SELECT 1 FROM custom_categories target
+                WHERE target.user_id = ? AND target.kind = source.kind AND target.name = source.name
+            )
+            """,
+            (source_user_id, target_user_id),
+        ).fetchall()
+        for row in duplicate_categories:
+            connection.execute(
+                "DELETE FROM custom_categories WHERE id = ?",
+                (int(row["id"]),),
+            )
+        connection.execute(
+            "UPDATE custom_categories SET user_id = ? WHERE user_id = ?",
+            (target_user_id, source_user_id),
+        )
+        source_shortcut = connection.execute(
+            "SELECT token_hash, created_at FROM shortcut_access WHERE user_id = ?",
+            (source_user_id,),
+        ).fetchone()
+        target_shortcut = connection.execute(
+            "SELECT 1 FROM shortcut_access WHERE user_id = ?",
+            (target_user_id,),
+        ).fetchone()
+        if source_shortcut is not None and target_shortcut is not None:
+            connection.execute(
+                """
+                INSERT INTO shortcut_access_history (token_hash, user_id, created_at)
+                VALUES (?, ?, ?) ON CONFLICT(token_hash) DO NOTHING
+                """,
+                (source_shortcut["token_hash"], target_user_id, source_shortcut["created_at"]),
+            )
+            connection.execute(
+                "DELETE FROM shortcut_access WHERE user_id = ?",
+                (source_user_id,),
+            )
+        else:
+            connection.execute(
+                "UPDATE shortcut_access SET user_id = ? WHERE user_id = ?",
+                (target_user_id, source_user_id),
+            )
+        connection.execute(
+            "UPDATE shortcut_access_history SET user_id = ? WHERE user_id = ?",
+            (target_user_id, source_user_id),
+        )
+
+    def _confirm_telegram_link_request_sync(
+        self,
+        token_hash: str,
+        telegram_user_id: int,
+        approved_at: str,
+    ) -> str:
+        try:
+            with self._connect() as connection:
+                request = connection.execute(
+                    """
+                    SELECT auth_subject FROM telegram_login_requests
+                    WHERE token_hash = ? AND request_type = 'link'
+                      AND status = 'pending' AND expires_at >= ?
+                    """,
+                    (token_hash, approved_at),
+                ).fetchone()
+                if request is None:
+                    return "expired"
+                auth_subject = str(request["auth_subject"] or "")
+                identity = connection.execute(
+                    "SELECT user_id FROM auth_identities WHERE auth_subject = ?",
+                    (auth_subject,),
+                ).fetchone()
+                if identity is None:
+                    return "invalid"
+                occupied = connection.execute(
+                    "SELECT auth_subject FROM auth_identities WHERE user_id = ?",
+                    (telegram_user_id,),
+                ).fetchone()
+                if occupied is not None and str(occupied["auth_subject"]) != auth_subject:
+                    return "already_linked"
+                source_user_id = int(identity["user_id"])
+                self._move_user_data_sync(connection, source_user_id, telegram_user_id)
+                connection.execute(
+                    "UPDATE auth_identities SET user_id = ? WHERE auth_subject = ?",
+                    (telegram_user_id, auth_subject),
+                )
+                connection.execute(
+                    """
+                    UPDATE telegram_login_requests
+                    SET status = 'approved', user_id = ?, approved_at = ?
+                    WHERE token_hash = ?
+                    """,
+                    (telegram_user_id, approved_at, token_hash),
+                )
+                return "approved"
+        except (sqlite3.IntegrityError, PostgresIntegrityError):
+            return "already_linked"
+
+    async def telegram_link_for_auth(self, auth_subject: str) -> dict[str, object] | None:
+        return await asyncio.to_thread(self._telegram_link_for_auth_sync, auth_subject)
+
+    def _telegram_link_for_auth_sync(self, auth_subject: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT a.user_id, p.display_name, p.username
+                FROM auth_identities a
+                LEFT JOIN user_profiles p ON p.user_id = a.user_id
+                WHERE a.auth_subject = ?
+                """,
+                (auth_subject,),
+            ).fetchone()
+        if row is None or int(row["user_id"]) <= 0:
+            return None
+        return {
+            "user_id": int(row["user_id"]),
+            "display_name": row["display_name"],
+            "username": row["username"],
+        }
+
+    async def unlink_telegram_auth(self, auth_subject: str) -> int | None:
+        return await asyncio.to_thread(self._unlink_telegram_auth_sync, auth_subject)
+
+    def _unlink_telegram_auth_sync(self, auth_subject: str) -> int | None:
+        with self._connect() as connection:
+            identity = connection.execute(
+                "SELECT user_id FROM auth_identities WHERE auth_subject = ?",
+                (auth_subject,),
+            ).fetchone()
+            if identity is None or int(identity["user_id"]) <= 0:
+                return None
+            old_user_id = int(identity["user_id"])
+            while True:
+                new_user_id = -(secrets.randbits(62) + 1)
+                occupied = connection.execute(
+                    "SELECT 1 FROM auth_identities WHERE user_id = ?",
+                    (new_user_id,),
+                ).fetchone()
+                if occupied is None:
+                    break
+            self._move_user_data_sync(connection, old_user_id, new_user_id)
+            connection.execute(
+                "UPDATE auth_identities SET user_id = ? WHERE auth_subject = ?",
+                (new_user_id, auth_subject),
+            )
+            return new_user_id
 
     async def upsert_user_profile(
         self,

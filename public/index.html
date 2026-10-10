@@ -39,7 +39,8 @@
         <form id="authForm">
           <label id="authNameLabel" class="hidden">Имя<input id="authName" autocomplete="name" placeholder="Как к вам обращаться"></label>
           <label>Email<input id="authEmail" type="email" autocomplete="email" required placeholder="name@example.com"></label>
-          <label>Пароль<input id="authPassword" type="password" autocomplete="current-password" minlength="8" required placeholder="Минимум 8 символов"></label>
+          <label>Пароль<span class="password-field"><input id="authPassword" type="password" autocomplete="current-password" minlength="8" required placeholder="Минимум 8 символов"><button type="button" class="password-toggle" data-password-toggle="authPassword" aria-label="Показать пароль">👁</button></span></label>
+          <label id="authPasswordConfirmLabel" class="hidden">Повторите пароль<span class="password-field"><input id="authPasswordConfirm" type="password" autocomplete="new-password" minlength="8" placeholder="Ещё раз тот же пароль"><button type="button" class="password-toggle" data-password-toggle="authPasswordConfirm" aria-label="Показать пароль">👁</button></span></label>
           <button id="authSubmit" class="primary-button" type="submit">Войти</button>
           <button id="forgotPassword" class="subtle-button" type="button">Забыли пароль?</button>
           <p id="authStatus" class="form-status"></p>
@@ -68,6 +69,7 @@
       </section>
 
       <div class="dashboard-actions">
+        <button id="profileButton" class="updates-button hidden">👤 Профиль</button>
         <button id="adminButton" class="updates-button hidden">🛡 Пользователи</button>
         <button id="whatsNewButton" class="updates-button">✨ Что нового?</button>
         <button id="signOutButton" class="updates-button hidden">Выйти</button>
@@ -146,6 +148,17 @@
     <div id="updatesList" class="updates-list"><div class="empty">Загружаем обновления…</div></div>
   </dialog>
 
+  <dialog id="profileDialog" class="updates-dialog profile-dialog">
+    <div class="dialog-head"><div><span class="eyebrow">Единый аккаунт</span><h3>Профиль</h3></div><button id="closeProfile" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
+    <div class="profile-copy">
+      <p>Привяжите Telegram, чтобы сайт, Mini App и бот показывали одни счета и операции.</p>
+      <div id="telegramLinkState" class="telegram-link-state"><span class="loader"></span></div>
+      <button id="linkTelegramButton" class="primary-button" type="button">Привязать Telegram</button>
+      <button id="unlinkTelegramButton" class="danger-button hidden" type="button">Отвязать Telegram</button>
+      <p id="profileStatus" class="form-status"></p>
+    </div>
+  </dialog>
+
   <dialog id="adminDialog" class="updates-dialog">
     <div class="dialog-head"><div><span class="eyebrow">Только администратор</span><h3>Пользователи</h3></div><button id="closeAdmin" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
     <div id="adminUsers" class="updates-list"><div class="empty">Загружаем пользователей…</div></div>
@@ -154,7 +167,7 @@
   <dialog id="resetDialog">
     <form id="resetForm">
       <div class="dialog-head"><h3>Новый пароль</h3><button id="closeReset" type="button" class="icon-button" aria-label="Закрыть">×</button></div>
-      <label>Новый пароль<input id="resetPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label>Новый пароль<span class="password-field"><input id="resetPassword" type="password" minlength="8" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="resetPassword" aria-label="Показать пароль">👁</button></span></label>
       <button class="primary-button" type="submit">Сохранить пароль</button>
       <p id="resetStatus" class="form-status"></p>
     </form>

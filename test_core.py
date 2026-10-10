@@ -204,6 +204,64 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_telegram_link_merges_accounts_and_can_unlink(self) -> None:
+        now = datetime(2026, 10, 10, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        auth_subject = "email-user-1"
+        web_user_id = await self.database.user_by_auth_subject(auth_subject, now)
+        self.assertLess(web_user_id, 0)
+        web_account = await self.database.add_account(web_user_id, "Kaspi", 100000, now)
+        telegram_account = await self.database.add_account(42, "Kaspi", 250000, now)
+        assert web_account is not None and telegram_account is not None
+        await self.database.add_transaction(
+            web_user_id, "expense", "food", 10000, "С сайта", now, web_account.id
+        )
+        token = await self.database.create_telegram_link_request(
+            auth_subject, now, now + timedelta(minutes=10)
+        )
+        self.assertEqual(
+            await self.database.confirm_telegram_link_request(
+                token, 42, now + timedelta(minutes=1)
+            ),
+            "approved",
+        )
+        status = await self.database.telegram_link_request_status(
+            token, auth_subject, now + timedelta(minutes=1)
+        )
+        self.assertEqual(status, {"status": "approved", "user_id": 42})
+        linked = await self.database.telegram_link_for_auth(auth_subject)
+        self.assertEqual(linked["user_id"], 42)
+        self.assertEqual(
+            {item.name for item in await self.database.accounts(42)},
+            {"Kaspi", "Kaspi (сайт)"},
+        )
+        self.assertEqual(len(await self.database.recent(42)), 1)
+
+        detached_user_id = await self.database.unlink_telegram_auth(auth_subject)
+        assert detached_user_id is not None
+        self.assertLess(detached_user_id, 0)
+        self.assertIsNone(await self.database.telegram_link_for_auth(auth_subject))
+        self.assertEqual(len(await self.database.accounts(detached_user_id)), 2)
+        self.assertEqual(len(await self.database.recent(detached_user_id)), 1)
+
+    async def test_telegram_cannot_link_to_two_email_accounts(self) -> None:
+        now = datetime(2026, 10, 10, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        for subject in ("first", "second"):
+            await self.database.user_by_auth_subject(subject, now)
+        first_token = await self.database.create_telegram_link_request(
+            "first", now, now + timedelta(minutes=10)
+        )
+        second_token = await self.database.create_telegram_link_request(
+            "second", now, now + timedelta(minutes=10)
+        )
+        self.assertEqual(
+            await self.database.confirm_telegram_link_request(first_token, 42, now),
+            "approved",
+        )
+        self.assertEqual(
+            await self.database.confirm_telegram_link_request(second_token, 42, now),
+            "already_linked",
+        )
+
     async def test_accounts_balances_transfer_and_undo(self) -> None:
         now = datetime(2026, 10, 3, 12, 30, tzinfo=ZoneInfo("Asia/Almaty"))
         cash = await self.database.add_account(

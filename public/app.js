@@ -8,6 +8,8 @@ let authToken = '';
 let authSession = null;
 let authMode = 'signin';
 let viewOwnerId = null;
+let telegramLinkToken = '';
+let telegramLinkPoll = null;
 const authHeaders = () => ({
   ...(initData ? {'X-Telegram-Init-Data': initData} : {}),
   ...((authToken || token) ? {'Authorization': `Bearer ${authToken || token}`} : {}),
@@ -138,6 +140,7 @@ async function refresh() {
     try {
       const me = await api('/api/me');
       $('adminButton').classList.toggle('hidden', !me.is_admin);
+      $('profileButton').classList.toggle('hidden', !authToken);
       $('signOutButton').classList.toggle('hidden', !(authSession || me.can_sign_out));
     } catch (_) {}
   } catch (error) {
@@ -243,6 +246,8 @@ function setAuthMode(mode) {
   authMode = mode;
   document.querySelectorAll('[data-auth-mode]').forEach(button => button.classList.toggle('active', button.dataset.authMode === mode));
   $('authNameLabel').classList.toggle('hidden', mode !== 'signup');
+  $('authPasswordConfirmLabel').classList.toggle('hidden', mode !== 'signup');
+  $('authPasswordConfirm').required = mode === 'signup';
   $('authPassword').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
   $('authSubmit').textContent = mode === 'signup' ? 'Создать аккаунт' : 'Войти';
   $('forgotPassword').classList.toggle('hidden', mode !== 'signin');
@@ -250,6 +255,14 @@ function setAuthMode(mode) {
 }
 
 document.querySelectorAll('[data-auth-mode]').forEach(button => button.onclick = () => setAuthMode(button.dataset.authMode));
+document.querySelectorAll('[data-password-toggle]').forEach(button => button.onclick = () => {
+  const input = $(button.dataset.passwordToggle);
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  button.classList.toggle('visible', show);
+  button.textContent = show ? '🙈' : '👁';
+  button.setAttribute('aria-label', show ? 'Скрыть пароль' : 'Показать пароль');
+});
 
 $('authForm').onsubmit = async event => {
   event.preventDefault();
@@ -257,12 +270,20 @@ $('authForm').onsubmit = async event => {
   $('authSubmit').disabled = true; $('authStatus').textContent = authMode === 'signup' ? 'Создаём аккаунт…' : 'Входим…';
   try {
     const credentials = {email:$('authEmail').value.trim(), password:$('authPassword').value};
+    if (authMode === 'signup' && credentials.password !== $('authPasswordConfirm').value) {
+      throw new Error('Пароли не совпадают');
+    }
     const result = authMode === 'signup'
       ? await authClient.signUp.email({...credentials, name:$('authName').value.trim() || credentials.email.split('@')[0]})
       : await authClient.signIn.email(credentials);
     if (result?.error) throw new Error(result.error.message || 'Не удалось войти');
     await refreshAuthToken();
-    if (!authToken) throw new Error('Подтвердите email, затем выполните вход');
+    if (!authToken && authMode === 'signup') {
+      const signInResult = await authClient.signIn.email(credentials);
+      if (signInResult?.error) throw new Error(signInResult.error.message || 'Аккаунт создан. Выполните вход.');
+      await refreshAuthToken();
+    }
+    if (!authToken) throw new Error('Аккаунт создан. Теперь выполните вход.');
     $('authStatus').textContent = '✓ Готово';
     await refresh();
   } catch (error) { $('authStatus').textContent = error.message || String(error); }
@@ -297,6 +318,82 @@ $('signOutButton').onclick = async () => {
   authSession = null; authToken = ''; viewOwnerId = null;
   await refresh();
 };
+
+function renderTelegramLink(profile) {
+  const linked = profile?.telegram;
+  if (linked) {
+    const title = linked.display_name || (linked.username ? `@${linked.username}` : `Telegram ID ${linked.user_id}`);
+    $('telegramLinkState').innerHTML = `<strong>✓ Telegram привязан</strong><small>${escapeHtml(title)}</small>`;
+  } else {
+    $('telegramLinkState').innerHTML = '<strong>Telegram не привязан</strong><small>Данные сайта пока отделены от бота</small>';
+  }
+  $('linkTelegramButton').classList.toggle('hidden', Boolean(linked));
+  $('unlinkTelegramButton').classList.toggle('hidden', !linked);
+}
+
+async function loadProfile() {
+  const profile = await api('/api/profile');
+  renderTelegramLink(profile);
+  return profile;
+}
+
+async function checkTelegramLink() {
+  if (!telegramLinkToken) return;
+  try {
+    const status = await api(`/api/profile/telegram/link/status?token=${encodeURIComponent(telegramLinkToken)}`);
+    if (status.status === 'approved') {
+      clearInterval(telegramLinkPoll); telegramLinkPoll = null; telegramLinkToken = '';
+      $('profileStatus').textContent = '✓ Telegram привязан, данные синхронизированы';
+      await loadProfile(); await refresh();
+    } else if (status.status === 'expired') {
+      clearInterval(telegramLinkPoll); telegramLinkPoll = null; telegramLinkToken = '';
+      $('profileStatus').textContent = 'Ссылка истекла. Нажмите «Привязать» ещё раз.';
+      $('linkTelegramButton').disabled = false;
+    }
+  } catch (error) {
+    $('profileStatus').textContent = error.message || String(error);
+  }
+}
+
+async function openProfile() {
+  $('profileDialog').showModal();
+  $('profileStatus').textContent = '';
+  $('telegramLinkState').innerHTML = '<span class="loader"></span>';
+  try { await loadProfile(); }
+  catch (error) { $('telegramLinkState').innerHTML = `<strong>${escapeHtml(error.message)}</strong>`; }
+}
+
+$('profileButton').onclick = openProfile;
+$('closeProfile').onclick = () => $('profileDialog').close();
+$('linkTelegramButton').onclick = async () => {
+  const button = $('linkTelegramButton'); button.disabled = true;
+  $('profileStatus').textContent = 'Создаём безопасный запрос…';
+  try {
+    const data = await api('/api/profile/telegram/link/start', {method:'POST'});
+    telegramLinkToken = data.token;
+    $('profileStatus').textContent = 'Подтвердите привязку в чате с ботом, затем вернитесь сюда';
+    clearInterval(telegramLinkPoll);
+    telegramLinkPoll = setInterval(checkTelegramLink, 2000);
+    location.href = data.telegram_url;
+  } catch (error) {
+    $('profileStatus').textContent = error.message || String(error);
+    button.disabled = false;
+  }
+};
+$('unlinkTelegramButton').onclick = async () => {
+  if (!confirm('Отвязать Telegram? Данные останутся на сайте, а бот начнёт с отдельного профиля.')) return;
+  const button = $('unlinkTelegramButton'); button.disabled = true;
+  $('profileStatus').textContent = 'Отвязываем…';
+  try {
+    await api('/api/profile/telegram/unlink', {method:'POST'});
+    $('profileStatus').textContent = 'Telegram отвязан. Данные сайта сохранены.';
+    await loadProfile(); await refresh();
+  } catch (error) { $('profileStatus').textContent = error.message || String(error); }
+  finally { button.disabled = false; }
+};
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && telegramLinkToken) checkTelegramLink();
+});
 
 async function openAdmin() {
   $('adminDialog').showModal(); $('adminUsers').innerHTML = '<div class="empty">Загружаем пользователей…</div>';
