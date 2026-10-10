@@ -190,7 +190,7 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 }
 
-async function refresh() {
+async function refresh({throwOnError = false} = {}) {
   try {
     const params = new URLSearchParams({period:activePeriod});
     if (activePeriod === 'custom') { params.set('start', customStart); params.set('end', customEnd); }
@@ -209,8 +209,11 @@ async function refresh() {
       $('profileButton').classList.toggle('hidden', !authToken);
       $('signOutButton').classList.toggle('hidden', !(authSession || me.can_sign_out));
     } catch (_) {}
+    return true;
   } catch (error) {
     $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('addTransaction').classList.add('hidden'); $('mobileNav').classList.add('hidden'); $('connectionLabel').textContent = 'Нужен вход';
+    if (throwOnError) throw error;
+    return false;
   }
 }
 
@@ -371,9 +374,9 @@ $('authForm').onsubmit = async event => {
       if (!authToken) await refreshAuthToken({attempts:3});
     }
     if (!authToken) throw new Error('Не удалось открыть сессию. Обновите страницу и попробуйте войти ещё раз.');
-    $('authStatus').textContent = '✓ Готово';
     rememberActivity(true); startActivityTracking();
-    await refresh();
+    await refresh({throwOnError:true});
+    $('authStatus').textContent = '✓ Готово';
   } catch (error) { $('authStatus').textContent = error.message || String(error); }
   finally { $('authSubmit').disabled = false; }
 };

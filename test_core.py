@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from bot import format_money, parse_amount
 from api.index import (
     create_telegram_session,
+    resolve_neon_auth_issuer,
     verify_telegram_login_data,
     verify_telegram_session,
 )
@@ -72,6 +73,17 @@ class AmountTests(unittest.TestCase):
         session = create_telegram_session(7297320277, bot_token)
         self.assertEqual(verify_telegram_session(session, bot_token), 7297320277)
         self.assertIsNone(verify_telegram_session(session, "wrong-token"))
+
+    def test_neon_auth_issuer_keeps_full_auth_path(self) -> None:
+        base_url = "https://example.neonauth.test/neondb/auth/"
+        self.assertEqual(
+            resolve_neon_auth_issuer(base_url),
+            "https://example.neonauth.test/neondb/auth",
+        )
+        self.assertEqual(
+            resolve_neon_auth_issuer(base_url, "https://issuer.example/custom/"),
+            "https://issuer.example/custom",
+        )
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
