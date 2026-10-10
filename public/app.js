@@ -298,14 +298,32 @@ async function openUpdates() {
 $('whatsNewButton').onclick = openUpdates;
 $('closeUpdates').onclick = () => $('updatesDialog').close();
 
-async function refreshAuthToken() {
-  if (!authClient) return false;
-  const sessionResult = await authClient.getSession();
-  authSession = sessionResult?.data?.user ? sessionResult.data : null;
-  if (!authSession) { authToken = ''; return false; }
-  const tokenResult = await authClient.token();
-  authToken = tokenResult?.data?.token || '';
+function applyAuthResult(result) {
+  const data = result?.data;
+  if (data?.user && data?.session) authSession = data;
+  const sessionToken = data?.session?.token || data?.token || '';
+  if (sessionToken) authToken = sessionToken;
   return Boolean(authToken);
+}
+
+async function refreshAuthToken({attempts = 1} = {}) {
+  if (!authClient) return false;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const sessionResult = await authClient.getSession();
+    authSession = sessionResult?.data?.user ? sessionResult.data : null;
+    authToken = authSession?.session?.token || '';
+    if (authToken) return true;
+    if (authSession && typeof authClient.token === 'function') {
+      try {
+        const tokenResult = await authClient.token();
+        authToken = tokenResult?.data?.token || tokenResult?.data?.session?.token || '';
+      } catch (_) {}
+      if (authToken) return true;
+    }
+    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (!authSession) authToken = '';
+  return false;
 }
 
 function setAuthMode(mode) {
@@ -339,17 +357,20 @@ $('authForm').onsubmit = async event => {
     if (authMode === 'signup' && credentials.password !== $('authPasswordConfirm').value) {
       throw new Error('Пароли не совпадают');
     }
-    const result = authMode === 'signup'
+    const signingUp = authMode === 'signup';
+    const result = signingUp
       ? await authClient.signUp.email({...credentials, name:$('authName').value.trim() || credentials.email.split('@')[0]})
       : await authClient.signIn.email(credentials);
     if (result?.error) throw new Error(result.error.message || 'Не удалось войти');
-    await refreshAuthToken();
-    if (!authToken && authMode === 'signup') {
+    applyAuthResult(result);
+    if (!authToken) await refreshAuthToken({attempts:3});
+    if (!authToken && signingUp) {
       const signInResult = await authClient.signIn.email(credentials);
       if (signInResult?.error) throw new Error(signInResult.error.message || 'Аккаунт создан. Выполните вход.');
-      await refreshAuthToken();
+      applyAuthResult(signInResult);
+      if (!authToken) await refreshAuthToken({attempts:3});
     }
-    if (!authToken) throw new Error('Аккаунт создан. Теперь выполните вход.');
+    if (!authToken) throw new Error('Не удалось открыть сессию. Обновите страницу и попробуйте войти ещё раз.');
     $('authStatus').textContent = '✓ Готово';
     rememberActivity(true); startActivityTracking();
     await refresh();
