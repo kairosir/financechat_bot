@@ -47,7 +47,7 @@ ADMIN_IDS = {
 }
 TELEGRAM_SESSION_COOKIE = "purpose_finance_telegram"
 TELEGRAM_SESSION_ISSUER = "purpose-finance-telegram"
-TELEGRAM_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+TELEGRAM_SESSION_TTL_SECONDS = 3 * 24 * 60 * 60
 _jwks_client = PyJWKClient(NEON_AUTH_JWKS_URL, cache_keys=True) if NEON_AUTH_JWKS_URL else None
 _telegram_bot_username: str | None = None
 
@@ -426,12 +426,25 @@ async def telegram_logout(response: Response) -> dict[str, bool]:
 
 
 @app.get("/api/me")
-async def me(request: Request) -> dict[str, object]:
+async def me(request: Request, response: Response) -> dict[str, object]:
     user_id = await authorized_user(request)
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-    can_sign_out = verify_telegram_session(
+    telegram_session_user = verify_telegram_session(
         request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
-    ) is not None or (scheme.lower() == "bearer" and token.count(".") == 2)
+    )
+    if telegram_session_user is not None:
+        response.set_cookie(
+            TELEGRAM_SESSION_COOKIE,
+            create_telegram_session(telegram_session_user),
+            max_age=TELEGRAM_SESSION_TTL_SECONDS,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+    can_sign_out = telegram_session_user is not None or (
+        scheme.lower() == "bearer" and token.count(".") == 2
+    )
     return {
         "ok": True,
         "user_id": user_id,

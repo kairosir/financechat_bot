@@ -10,6 +10,12 @@ let authMode = 'signin';
 let viewOwnerId = null;
 let telegramLinkToken = '';
 let telegramLinkPoll = null;
+const INACTIVITY_LIMIT_MS = 3 * 24 * 60 * 60 * 1000;
+const LAST_ACTIVITY_KEY = 'purpose_finance_last_activity';
+let activityTracking = false;
+let lastActivityWrite = 0;
+let lastSessionKeepalive = 0;
+let inactivityLogoutRunning = false;
 const authHeaders = () => ({
   ...(initData ? {'X-Telegram-Init-Data': initData} : {}),
   ...((authToken || token) ? {'Authorization': `Bearer ${authToken || token}`} : {}),
@@ -38,6 +44,65 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
   return data;
 }
+
+function storedLastActivity() {
+  const value = Number(localStorage.getItem(LAST_ACTIVITY_KEY) || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function inactivityExpired() {
+  const lastActivity = storedLastActivity();
+  return lastActivity > 0 && Date.now() - lastActivity >= INACTIVITY_LIMIT_MS;
+}
+
+function rememberActivity(force = false) {
+  if (!activityTracking && !force) return;
+  const now = Date.now();
+  if (!force && now - lastActivityWrite < 30000) return;
+  lastActivityWrite = now;
+  localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
+  if (now - lastSessionKeepalive >= 6 * 60 * 60 * 1000) {
+    lastSessionKeepalive = now;
+    Promise.resolve(authClient ? refreshAuthToken() : true)
+      .then(() => fetch('/api/me', {headers:authHeaders()}))
+      .catch(() => {});
+  }
+}
+
+function startActivityTracking() {
+  activityTracking = true;
+  if (!storedLastActivity()) rememberActivity(true);
+}
+
+async function signOutEverywhere({inactive = false} = {}) {
+  if (inactivityLogoutRunning) return;
+  inactivityLogoutRunning = true;
+  activityTracking = false;
+  try {
+    if (authClient) await authClient.signOut();
+    await fetch('/api/auth/telegram/logout', {method:'POST'}).catch(() => {});
+  } finally {
+    authSession = null; authToken = ''; viewOwnerId = null;
+    localStorage.removeItem(LAST_ACTIVITY_KEY);
+    inactivityLogoutRunning = false;
+  }
+  await refresh();
+  if (inactive) $('authStatus').textContent = 'Сессия завершена: не было активности более 3 дней';
+}
+
+async function enforceInactivityLogout() {
+  if (!activityTracking || !inactivityExpired()) return false;
+  await signOutEverywhere({inactive:true});
+  return true;
+}
+
+['pointerdown', 'keydown', 'touchstart', 'scroll'].forEach(eventName => {
+  window.addEventListener(eventName, () => rememberActivity(), {passive:true});
+});
+setInterval(() => { enforceInactivityLogout().catch(() => {}); }, 60000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) enforceInactivityLogout().catch(() => {});
+});
 
 function renderTelegramLogin(botUsername) {
   if (!botUsername || initData) return;
@@ -81,6 +146,7 @@ window.onTelegramAuth = async user => {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || 'Не удалось войти через Telegram');
     $('telegramLoginStatus').textContent = '✓ Готово';
+    rememberActivity(true); startActivityTracking();
     await refresh();
   } catch (error) {
     $('telegramLoginStatus').textContent = error.message || String(error);
@@ -285,6 +351,7 @@ $('authForm').onsubmit = async event => {
     }
     if (!authToken) throw new Error('Аккаунт создан. Теперь выполните вход.');
     $('authStatus').textContent = '✓ Готово';
+    rememberActivity(true); startActivityTracking();
     await refresh();
   } catch (error) { $('authStatus').textContent = error.message || String(error); }
   finally { $('authSubmit').disabled = false; }
@@ -313,10 +380,7 @@ $('resetForm').onsubmit = async event => {
 $('closeReset').onclick = () => $('resetDialog').close();
 
 $('signOutButton').onclick = async () => {
-  if (authClient) await authClient.signOut();
-  await fetch('/api/auth/telegram/logout', {method:'POST'}).catch(() => {});
-  authSession = null; authToken = ''; viewOwnerId = null;
-  await refresh();
+  await signOutEverywhere();
 };
 
 function renderTelegramLink(profile) {
@@ -436,10 +500,17 @@ async function boot() {
     }
     if (config.telegram_login_enabled) renderTelegramLogin(config.telegram_bot_username);
   } catch (_) {}
+  if (!initData && !token && inactivityExpired()) {
+    await signOutEverywhere({inactive:true});
+    return;
+  }
   if (new URLSearchParams(location.search).get('reset') === '1' || new URLSearchParams(location.search).get('token')) {
     $('resetDialog').showModal();
   }
   await refresh();
+  if (!$('dashboard').classList.contains('hidden') && !initData && !token) {
+    startActivityTracking();
+  }
 }
 
 boot();
