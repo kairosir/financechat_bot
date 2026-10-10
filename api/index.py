@@ -8,7 +8,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 from typing import Optional
 
@@ -27,8 +27,21 @@ from keyboards import EXPENSE_CATEGORIES, INCOME_CATEGORIES, category_label, cus
 from updates import releases_payload
 
 
-def resolve_neon_auth_issuer(base_url: str, configured_issuer: str = "") -> str:
-    return configured_issuer.strip().rstrip("/") or base_url.strip().rstrip("/")
+def resolve_neon_auth_issuers(
+    base_url: str,
+    configured_issuer: str = "",
+) -> tuple[str, ...]:
+    configured = configured_issuer.strip().rstrip("/")
+    if configured:
+        return (configured,)
+    normalized_base = base_url.strip().rstrip("/")
+    parts = urlsplit(normalized_base)
+    origin = (
+        f"{parts.scheme}://{parts.netloc}"
+        if parts.scheme and parts.netloc
+        else ""
+    )
+    return tuple(dict.fromkeys(value for value in (normalized_base, origin) if value))
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -38,7 +51,7 @@ WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TIMEZONE = ZoneInfo(os.getenv("BOT_TIMEZONE", "Asia/Almaty"))
 NEON_AUTH_BASE_URL = os.getenv("NEON_AUTH_BASE_URL", "").strip().rstrip("/")
 NEON_AUTH_JWKS_URL = os.getenv("NEON_AUTH_JWKS_URL", "").strip()
-NEON_AUTH_ISSUER = resolve_neon_auth_issuer(
+NEON_AUTH_ISSUERS = resolve_neon_auth_issuers(
     NEON_AUTH_BASE_URL,
     os.getenv("NEON_AUTH_ISSUER", ""),
 )
@@ -232,7 +245,7 @@ async def neon_auth_subject(request: Request) -> str:
 
 
 async def verify_neon_auth_token(token: str) -> str | None:
-    if not _jwks_client or not NEON_AUTH_ISSUER:
+    if not _jwks_client or not NEON_AUTH_ISSUERS:
         return None
     try:
         signing_key = await asyncio.to_thread(_jwks_client.get_signing_key_from_jwt, token)
@@ -240,7 +253,7 @@ async def verify_neon_auth_token(token: str) -> str | None:
             token,
             signing_key.key,
             algorithms=["EdDSA"],
-            issuer=NEON_AUTH_ISSUER,
+            issuer=NEON_AUTH_ISSUERS,
             options={"verify_aud": False},
         )
     except (InvalidTokenError, PyJWKClientError, ValueError):
