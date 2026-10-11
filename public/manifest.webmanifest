@@ -8,8 +8,8 @@
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
   "orientation": "portrait-primary",
-  "background_color": "#0f0a19",
-  "theme_color": "#120b24",
+  "background_color": "#f6f4f9",
+  "theme_color": "#f6f4f9",
   "icons": [
     {
       "src": "/purpose-finance-avatar.png",

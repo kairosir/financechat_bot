@@ -1,665 +1,556 @@
-const tg = window.Telegram?.WebApp;
-if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor?.('#0f0a19'); tg.setBackgroundColor?.('#0f0a19'); }
+'use strict';
 
-const token = new URLSearchParams(location.search).get('t') || '';
-const initData = tg?.initData || '';
+const $ = id => document.getElementById(id);
+const tg = window.Telegram?.WebApp;
+const telegramInitData = tg?.initData || '';
+const shortcutToken = new URLSearchParams(location.search).get('t') || '';
+const isMiniApp = Boolean(telegramInitData);
+const isShortcut = Boolean(shortcutToken);
+const currencySymbols = {KZT:'₸', RUB:'₽', USD:'$'};
+const accountMeta = {
+  card:{icon:'💳', label:'Карта'}, cash:{icon:'💵', label:'Наличные'}, deposit:{icon:'🏦', label:'Депозит'},
+};
+
 let authClient = null;
-let authToken = '';
 let authSession = null;
+let authToken = '';
 let authMode = 'signin';
-let viewOwnerId = null;
-let telegramLinkToken = '';
-let telegramLinkPoll = null;
-const INACTIVITY_LIMIT_MS = 3 * 24 * 60 * 60 * 1000;
-const LAST_ACTIVITY_KEY = 'purpose_finance_last_activity';
-const TELEGRAM_LINK_KEY = 'purpose_finance_telegram_link';
-const AUTH_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
-let activityTracking = false;
-let lastActivityWrite = 0;
-let lastSessionKeepalive = 0;
-let inactivityLogoutRunning = false;
-const authHeaders = () => ({
-  ...(initData ? {'X-Telegram-Init-Data': initData} : {}),
-  ...((authToken || token) ? {'Authorization': `Bearer ${authToken || token}`} : {}),
-});
-const $ = (id) => document.getElementById(id);
 let activeKind = 'expense';
 let activePeriod = 'month';
 let customStart = '';
 let customEnd = '';
-const currencySymbols = {KZT:'₸', RUB:'₽', USD:'$'};
-const accountTypeMeta = {
-  card:{icon:'💳',label:'Карта'},
-  deposit:{icon:'🏦',label:'Депозит'},
-  cash:{icon:'💵',label:'Наличные'},
-};
+let accountType = 'card';
+let dashboardData = null;
+let telegramLinkToken = '';
+let telegramLinkTimer = null;
+let toastTimer = null;
 
-const mobileDate = new Intl.DateTimeFormat('ru-RU', {month:'long', year:'numeric'}).format(new Date());
-$('mobileDate').textContent = mobileDate.charAt(0).toUpperCase() + mobileDate.slice(1);
+const ACTIVITY_KEY = 'purpose_finance_activity_v2';
+const LINK_KEY = 'purpose_finance_link_v2';
+const INACTIVITY_MS = 3 * 24 * 60 * 60 * 1000;
 
-async function api(path, options = {}) {
-  if (authClient && authSession && authTokenExpiresSoon(authToken)) {
-    await refreshAuthToken({attempts:2});
-  }
-  const request = () => fetch(path, {
-      ...options,
-      headers: {...authHeaders(), ...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})},
-    });
-  let response = await request();
-  if (response.status === 401 && authClient && authSession) {
-    const refreshed = await refreshAuthToken({attempts:2});
-    if (refreshed) response = await request();
-  }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
-  return data;
-}
-
-function authTokenExpiresSoon(value, thresholdMs = 30000) {
-  if (!value || value.split('.').length !== 3) return true;
-  try {
-    const encoded = value.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-    const payload = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')));
-    return !payload.exp || payload.exp * 1000 - Date.now() <= thresholdMs;
-  } catch (_) {
-    return true;
-  }
-}
-
-function storedLastActivity() {
-  const value = Number(localStorage.getItem(LAST_ACTIVITY_KEY) || 0);
-  return Number.isFinite(value) ? value : 0;
-}
-
-function inactivityExpired() {
-  const lastActivity = storedLastActivity();
-  return lastActivity > 0 && Date.now() - lastActivity >= INACTIVITY_LIMIT_MS;
-}
-
-function rememberActivity(force = false) {
-  if (!activityTracking && !force) return;
-  const now = Date.now();
-  if (!force && now - lastActivityWrite < 30000) return;
-  lastActivityWrite = now;
-  localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
-  if (now - lastSessionKeepalive >= AUTH_REFRESH_INTERVAL_MS) {
-    lastSessionKeepalive = now;
-    Promise.resolve(authClient ? refreshAuthToken() : true)
-      .then(() => fetch('/api/me', {headers:authHeaders()}))
-      .catch(() => {});
-  }
-}
-
-function startActivityTracking() {
-  activityTracking = true;
-  if (!storedLastActivity()) rememberActivity(true);
-}
-
-async function signOutEverywhere({inactive = false} = {}) {
-  if (inactivityLogoutRunning) return;
-  inactivityLogoutRunning = true;
-  activityTracking = false;
-  try {
-    if (authClient) await authClient.signOut();
-    await fetch('/api/auth/telegram/logout', {method:'POST'}).catch(() => {});
-  } finally {
-    authSession = null; authToken = ''; viewOwnerId = null;
-    localStorage.removeItem(LAST_ACTIVITY_KEY);
-    clearTelegramLinkRequest();
-    inactivityLogoutRunning = false;
-  }
-  await refresh();
-  if (inactive) $('authStatus').textContent = 'Сессия завершена: не было активности более 3 дней';
-}
-
-async function enforceInactivityLogout() {
-  if (!activityTracking || !inactivityExpired()) return false;
-  await signOutEverywhere({inactive:true});
-  return true;
-}
-
-['pointerdown', 'keydown', 'touchstart', 'scroll'].forEach(eventName => {
-  window.addEventListener(eventName, () => rememberActivity(), {passive:true});
-});
-setInterval(() => { enforceInactivityLogout().catch(() => {}); }, 60000);
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) enforceInactivityLogout().catch(() => {});
-});
-
-function renderTelegramLogin(botUsername) {
-  if (!botUsername || initData) return;
-  const normalizedUsername = String(botUsername).replace(/^@/, '');
-  $('telegramMobileLogin').onclick = async () => {
-    const button = $('telegramMobileLogin');
-    button.disabled = true;
-    $('telegramLoginStatus').textContent = 'Создаём безопасную ссылку…';
-    try {
-      const response = await fetch('/api/auth/telegram/start', {method:'POST'});
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.telegram_url) throw new Error(data.detail || 'Не удалось открыть Telegram');
-      $('telegramLoginStatus').textContent = 'Подтвердите вход в чате с ботом';
-      location.href = data.telegram_url;
-    } catch (error) {
-      $('telegramLoginStatus').textContent = error.message || String(error);
-      button.disabled = false;
-    }
-  };
-  const container = $('telegramLoginWidget');
-  container.replaceChildren();
-  const script = document.createElement('script');
-  script.async = true;
-  script.src = 'https://telegram.org/js/telegram-widget.js?22';
-  script.dataset.telegramLogin = normalizedUsername;
-  script.dataset.size = 'large';
-  script.dataset.radius = '12';
-  script.dataset.onauth = 'onTelegramAuth(user)';
-  container.appendChild(script);
-  $('telegramLoginBlock').classList.remove('hidden');
-}
-
-window.onTelegramAuth = async user => {
-  $('telegramLoginStatus').textContent = 'Входим через Telegram…';
-  try {
-    const response = await fetch('/api/auth/telegram', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(user),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || 'Не удалось войти через Telegram');
-    $('telegramLoginStatus').textContent = '✓ Готово';
-    rememberActivity(true); startActivityTracking();
-    await refresh();
-  } catch (error) {
-    $('telegramLoginStatus').textContent = error.message || String(error);
-  }
-};
-
-function formatDate(value) {
-  const date = new Date(value);
-  return new Intl.DateTimeFormat('ru-RU', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}).format(date);
-}
-
-function renderDashboard(data) {
-  const firstCurrency = data.currency_totals?.[0] || {balance:data.balance,income:data.income,expense:data.expense,currency:'KZT'};
-  $('balance').textContent = firstCurrency.balance;
-  $('income').textContent = `+${firstCurrency.income}`;
-  $('expense').textContent = `−${firstCurrency.expense}`;
-  $('periodLabel').textContent = data.period_label.toLowerCase();
-  $('historyTitle').textContent = data.period_label;
-  $('currencyTotals').innerHTML = (data.currency_totals || []).map(item => `<div class="currency-total"><strong>${escapeHtml(item.balance)}</strong><small>${escapeHtml(item.currency)} · +${escapeHtml(item.income)} / −${escapeHtml(item.expense)}</small></div>`).join('');
-  $('accounts').innerHTML = data.accounts.length ? data.accounts.map(item => {
-    const meta = accountTypeMeta[item.account_type] || accountTypeMeta.card;
-    const depositDetails = item.account_type === 'deposit'
-      ? ` · ном. ${escapeHtml(item.nominal_interest_rate || item.interest_rate || '—')} · эфф. ${escapeHtml(item.effective_interest_rate || '—')}${item.daily_interest_enabled ? ' · ежедневно' : ''}`
-      : '';
-    return `<article class="account-card"><span>${meta.icon} ${escapeHtml(item.name)}</span><strong>${escapeHtml(item.balance)}</strong><small>${meta.label}${depositDetails} · ${escapeHtml(item.currency)}</small></article>`;
-  }).join('') : '<div class="empty">Счета пока не созданы</div>';
-  const max = Math.max(...data.top_categories.map(x => Number(x.amount_minor) || 0), 1);
-  $('topCategories').innerHTML = data.top_categories.length ? data.top_categories.map(item => {
-    const value = Number(item.amount_minor) || 0;
-    return `<div class="chart-row"><div class="chart-meta"><span>${escapeHtml(item.label)}</span><span>${escapeHtml(item.amount)}</span></div><div class="chart-track"><div class="chart-fill" style="width:${Math.max(7,value/max*100)}%"></div></div></div>`;
-  }).join('') : '<div class="empty">Расходов в этом месяце ещё нет</div>';
-  $('history').innerHTML = data.history.length ? data.history.map(item => `
-    <article class="history-item">
-      <div class="history-icon">${escapeHtml(item.category.split(' ')[0])}</div>
-      <div class="history-copy"><strong>${escapeHtml(item.category)}</strong><small>${escapeHtml(item.account)} · ${formatDate(item.created_at)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></div>
-      <div class="history-amount ${item.kind}">${item.kind === 'income' ? '+' : '−'}${escapeHtml(item.amount)}</div>
-    </article>`).join('') : '<div class="empty">Добавьте первую операцию — она появится здесь</div>';
+if (isMiniApp) {
+  document.documentElement.classList.add('telegram-mini-app');
+  tg.ready();
+  tg.expand();
+  tg.setHeaderColor?.('#f6f4f9');
+  tg.setBackgroundColor?.('#f6f4f9');
 }
 
 function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+  return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 }
 
-function friendlyAuthError(error, fallback = 'Не удалось выполнить вход') {
+function setStatus(id, message = '', type = '') {
+  const element = $(id);
+  if (!element) return;
+  element.textContent = message;
+  element.classList.toggle('error', type === 'error');
+  element.classList.toggle('success', type === 'success');
+}
+
+function toast(message, type = '') {
+  clearTimeout(toastTimer);
+  const element = $('toast');
+  element.textContent = message;
+  element.style.background = type === 'error' ? '#9d2940' : '';
+  element.classList.add('show');
+  toastTimer = setTimeout(() => element.classList.remove('show'), 2800);
+}
+
+function friendlyError(error, fallback = 'Что-то пошло не так') {
   const message = String(error?.message || error || '').trim();
-  const normalized = message.toLowerCase();
-  if (normalized.includes('invalid email or password') || normalized.includes('invalid password')) return 'Неверный email или пароль';
-  if (normalized.includes('user already exists') || normalized.includes('already registered')) return 'Аккаунт с таким email уже существует';
-  if (normalized.includes('password') && normalized.includes('too short')) return 'Пароль должен содержать не менее 8 символов';
-  if (normalized.includes('current password')) return 'Текущий пароль указан неверно';
-  if (normalized.includes('too many')) return 'Слишком много попыток. Подождите немного и повторите.';
+  const value = message.toLowerCase();
+  if (value.includes('invalid email or password') || value.includes('invalid password')) return 'Неверный email или пароль';
+  if (value.includes('already exists') || value.includes('already registered')) return 'Аккаунт с таким email уже существует';
+  if (value.includes('password') && (value.includes('short') || value.includes('8'))) return 'Пароль должен содержать не менее 8 символов';
+  if (value.includes('too many')) return 'Слишком много попыток. Попробуйте немного позже.';
+  if (value.includes('current password')) return 'Текущий пароль указан неверно';
   return message || fallback;
 }
 
-async function refresh({throwOnError = false} = {}) {
+function tokenExpiresSoon(token, threshold = 30_000) {
+  if (!token || token.split('.').length !== 3) return true;
   try {
-    const params = new URLSearchParams({period:activePeriod});
-    if (activePeriod === 'custom') { params.set('start', customStart); params.set('end', customEnd); }
-    if (viewOwnerId !== null) params.set('owner_id', String(viewOwnerId));
-    const data = await api(`/api/dashboard?${params}`);
-    renderDashboard(data);
-    $('loading').classList.add('hidden'); $('authError').classList.add('hidden'); $('dashboard').classList.remove('hidden');
-    $('mobileNav').classList.remove('hidden');
-    $('addTransaction').classList.toggle('hidden', viewOwnerId !== null);
-    $('mobileAddTransaction').classList.toggle('hidden', viewOwnerId !== null);
-    $('newAccount').classList.toggle('hidden', viewOwnerId !== null);
-    document.querySelector('.status-pill').classList.add('ready'); $('connectionLabel').textContent = viewOwnerId === null ? 'Всё сохранено' : `Просмотр ID ${viewOwnerId}`;
-    try {
-      const me = await api('/api/me');
-      $('adminButton').classList.toggle('hidden', !me.is_admin);
-      $('profileButton').classList.toggle('hidden', !authToken);
-      $('signOutButton').classList.toggle('hidden', !(authSession || me.can_sign_out));
-    } catch (_) {}
-    return true;
-  } catch (error) {
-    $('loading').classList.add('hidden'); $('authError').classList.remove('hidden'); $('dashboard').classList.add('hidden'); $('addTransaction').classList.add('hidden'); $('mobileNav').classList.add('hidden'); $('connectionLabel').textContent = 'Нужен вход';
-    if (throwOnError) throw error;
-    return false;
-  }
+    const encoded = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')));
+    return !payload.exp || payload.exp * 1000 - Date.now() <= threshold;
+  } catch (_) { return true; }
 }
 
-async function loadOptions() {
-  const data = await api(`/api/options?kind=${activeKind}`);
-  $('categorySelect').innerHTML = '<option value="">Выберите категорию</option>' + data.categories.map(x => `<option value="${escapeHtml(x.value)}">${escapeHtml(x.label)}</option>`).join('');
-  $('accountSelect').innerHTML = '<option value="">Выберите счёт</option>' + data.accounts.map(x => `<option value="${x.id}" data-currency="${escapeHtml(x.currency)}">${escapeHtml(x.name)} · ${escapeHtml(x.balance)}</option>`).join('');
-  $('transactionCurrencySymbol').textContent = '₸';
-}
-
-$('accountSelect').onchange = () => {
-  const currency = $('accountSelect').selectedOptions[0]?.dataset.currency || 'KZT';
-  $('transactionCurrencySymbol').textContent = currencySymbols[currency] || currency;
-};
-
-function setDrawer(open) {
-  $('transactionDrawer').classList.toggle('open', open); $('transactionDrawer').setAttribute('aria-hidden', String(!open)); $('drawerBackdrop').classList.toggle('hidden', !open);
-  if (open) { loadOptions().catch(showFormError); setTimeout(() => $('amountInput').focus(), 280); }
-}
-
-function showFormError(error) { $('formStatus').textContent = error.message || String(error); tg?.HapticFeedback?.notificationOccurred('error'); }
-
-$('addTransaction').onclick = () => setDrawer(true); $('closeDrawer').onclick = () => setDrawer(false); $('drawerBackdrop').onclick = () => setDrawer(false);
-$('mobileAddTransaction').onclick = () => setDrawer(true);
-document.querySelectorAll('[data-scroll-to]').forEach(button => button.onclick = () => {
-  const target = $(button.dataset.scrollTo);
-  if (!target) return;
-  document.querySelectorAll('[data-scroll-to]').forEach(item => item.classList.toggle('active', item === button));
-  target.scrollIntoView({behavior:'smooth', block:'start'});
-});
-document.querySelectorAll('[data-kind]').forEach(button => button.onclick = () => {
-  activeKind = button.dataset.kind; document.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('active', x === button)); loadOptions().catch(showFormError);
-});
-
-$('transactionForm').onsubmit = async (event) => {
-  event.preventDefault(); const button = $('saveTransaction'); button.disabled = true; $('formStatus').textContent = 'Сохраняем…';
-  try {
-    await api('/api/transactions', {method:'POST', body:JSON.stringify({kind:activeKind, amount:$('amountInput').value, category:$('categorySelect').value, account_id:$('accountSelect').value, note:$('noteInput').value})});
-    tg?.HapticFeedback?.notificationOccurred('success'); $('transactionForm').reset(); $('formStatus').textContent = '✓ Операция сохранена'; await refresh(); setTimeout(() => setDrawer(false), 650);
-  } catch (error) { showFormError(error); } finally { button.disabled = false; }
-};
-
-function openDialog(mode) {
-  const account = mode === 'account'; $('dialogTitle').textContent = account ? 'Новый счёт' : 'Новая категория';
-  ['dialogBalanceLabel','dialogTypeLabel','dialogCurrencyLabel'].forEach(id => $(id).classList.toggle('hidden', !account));
-  ['dialogInterestLabel','dialogEffectiveInterestLabel','dialogDailyInterestLabel'].forEach(id => $(id).classList.add('hidden')); $('dialogName').value = ''; $('dialogBalance').value = '0'; $('dialogInterest').value = ''; $('dialogEffectiveInterest').value = ''; $('dialogDailyInterest').checked = false; $('dialogType').value = 'card'; $('dialogCurrency').value = 'KZT'; $('dialogCurrencySymbol').textContent = '₸'; $('dialogStatus').textContent = ''; $('smallDialog').dataset.mode = mode; $('smallDialog').showModal(); setTimeout(() => $('dialogName').focus(), 80);
-}
-$('newAccount').onclick = () => openDialog('account'); $('newCategory').onclick = () => openDialog('category');
-$('closeSmallDialog').onclick = () => $('smallDialog').close();
-$('dialogType').onchange = () => {
-  const hidden = $('dialogType').value !== 'deposit';
-  ['dialogInterestLabel','dialogEffectiveInterestLabel','dialogDailyInterestLabel'].forEach(id => $(id).classList.toggle('hidden', hidden));
-};
-$('dialogCurrency').onchange = () => {
-  const currency = $('dialogCurrency').value;
-  $('dialogCurrencySymbol').textContent = currencySymbols[currency] || currency;
-};
-$('smallDialogForm').onsubmit = async (event) => {
-  event.preventDefault(); const account = $('smallDialog').dataset.mode === 'account'; $('dialogStatus').textContent = 'Сохраняем…';
-  try {
-    await api(account ? '/api/accounts' : '/api/categories', {method:'POST', body:JSON.stringify(account ? {name:$('dialogName').value,balance:$('dialogBalance').value,account_type:$('dialogType').value,currency:$('dialogCurrency').value,nominal_interest_rate:$('dialogInterest').value,effective_interest_rate:$('dialogEffectiveInterest').value,daily_interest_enabled:$('dialogDailyInterest').checked} : {name:$('dialogName').value,kind:activeKind})});
-    $('smallDialog').close(); tg?.HapticFeedback?.notificationOccurred('success'); await refresh(); if (!account) await loadOptions();
-  } catch (error) { event.preventDefault(); $('dialogStatus').textContent = error.message; }
-};
-
-document.querySelectorAll('[data-period]').forEach(button => button.onclick = async () => {
-  const period = button.dataset.period;
-  if (period === 'custom') { $('customPeriod').classList.remove('hidden'); return; }
-  activePeriod = period; $('customPeriod').classList.add('hidden'); document.querySelectorAll('[data-period]').forEach(x => x.classList.toggle('active', x === button)); await refresh();
-});
-$('applyPeriod').onclick = async () => {
-  customStart = $('periodStart').value; customEnd = $('periodEnd').value;
-  if (!customStart || !customEnd) { tg?.showAlert?.('Выберите обе даты'); return; }
-  activePeriod = 'custom'; document.querySelectorAll('[data-period]').forEach(x => x.classList.toggle('active', x.dataset.period === 'custom'));
-  try { await refresh(); } catch (error) { tg?.showAlert?.(error.message); }
-};
-
-async function openUpdates() {
-  $('updatesDialog').showModal();
-  try {
-    const data = await api('/api/whats-new');
-    $('updatesList').innerHTML = data.releases.map(release => `<article class="release-card"><h4>Версия ${escapeHtml(release.version)}</h4><time>${escapeHtml(release.date)}</time><p>${escapeHtml(release.title)}</p><ul>${release.items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></article>`).join('');
-  } catch (error) { $('updatesList').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
-}
-$('whatsNewButton').onclick = openUpdates;
-$('closeUpdates').onclick = () => $('updatesDialog').close();
-
-function applyAuthResult(result) {
-  const data = result?.data;
-  if (data?.user && data?.session) authSession = data;
-  const sessionToken = data?.session?.token || data?.token || '';
-  if (sessionToken) authToken = sessionToken;
-  return Boolean(authToken);
-}
-
-async function refreshAuthToken({attempts = 1} = {}) {
+async function refreshAuthToken(attempts = 1) {
   if (!authClient) return false;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const sessionResult = await authClient.getSession();
-    authSession = sessionResult?.data?.user ? sessionResult.data : null;
+    const result = await authClient.getSession();
+    authSession = result?.data?.user ? result.data : null;
     authToken = '';
     if (!authSession) return false;
-    if (authSession && typeof authClient.token === 'function') {
-      try {
-        const tokenResult = await authClient.token();
-        authToken = tokenResult?.data?.token || tokenResult?.data?.session?.token || '';
-      } catch (_) {}
-      if (authToken) return true;
-    }
-    authToken = authSession?.session?.token || '';
+    try {
+      const tokenResult = await authClient.token();
+      authToken = tokenResult?.data?.token || tokenResult?.data?.session?.token || '';
+    } catch (_) {}
+    authToken ||= authSession?.session?.token || '';
     if (authToken) return true;
-    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 250));
+    await new Promise(resolve => setTimeout(resolve, 250));
   }
-  if (!authSession) authToken = '';
   return false;
 }
 
+function requestHeaders() {
+  return {
+    ...(telegramInitData ? {'X-Telegram-Init-Data':telegramInitData} : {}),
+    ...((authToken || shortcutToken) ? {Authorization:`Bearer ${authToken || shortcutToken}`} : {}),
+  };
+}
+
+async function api(path, options = {}) {
+  if (authClient && authSession && tokenExpiresSoon(authToken)) await refreshAuthToken(2);
+  const execute = () => fetch(path, {
+    ...options,
+    headers:{...requestHeaders(), ...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})},
+  });
+  let response = await execute();
+  if (response.status === 401 && authClient && authSession && await refreshAuthToken(2)) response = await execute();
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || payload.message || 'Не удалось выполнить запрос');
+  return payload;
+}
+
+function showOnly(screenId) {
+  ['bootScreen','authScreen','miniAppError','appScreen'].forEach(id => $(id).classList.toggle('hidden', id !== screenId));
+}
+
+function rememberActivity() {
+  if (isMiniApp || isShortcut || !authSession) return;
+  localStorage.setItem(ACTIVITY_KEY, String(Date.now()));
+}
+
+function sessionInactive() {
+  const last = Number(localStorage.getItem(ACTIVITY_KEY) || 0);
+  return last > 0 && Date.now() - last >= INACTIVITY_MS;
+}
+
+async function signOut({inactive = false} = {}) {
+  try { await authClient?.signOut(); } catch (_) {}
+  authSession = null;
+  authToken = '';
+  localStorage.removeItem(ACTIVITY_KEY);
+  stopLinkPolling();
+  showOnly('authScreen');
+  setAuthMode('signin');
+  setStatus('authStatus', inactive ? 'Сессия завершена после 3 дней без активности' : 'Вы вышли из аккаунта', inactive ? 'error' : 'success');
+}
+
+['pointerdown','keydown','touchstart'].forEach(name => addEventListener(name, rememberActivity, {passive:true}));
+setInterval(() => { if (authSession && sessionInactive()) signOut({inactive:true}); }, 60_000);
+
+function accountCard(item) {
+  const meta = accountMeta[item.account_type] || accountMeta.card;
+  let details = `${meta.label} · ${escapeHtml(item.currency)}`;
+  if (item.account_type === 'deposit') {
+    details = `Ном. ${escapeHtml(item.nominal_interest_rate || item.interest_rate || '—')} · Эфф. ${escapeHtml(item.effective_interest_rate || '—')}`;
+    if (item.daily_interest_enabled) details += ' · ежедневно';
+  }
+  return `<article class="account-card ${escapeHtml(item.account_type)}"><div class="account-head"><span>${escapeHtml(item.name)}</span><span class="account-icon">${meta.icon}</span></div><strong>${escapeHtml(item.balance)}</strong><small>${details}</small></article>`;
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  return new Intl.DateTimeFormat('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).format(date);
+}
+
+function historyItem(item) {
+  const icon = String(item.category || '•').split(' ')[0];
+  const note = item.note ? ` · ${escapeHtml(item.note)}` : '';
+  return `<article class="history-item"><div class="history-icon">${escapeHtml(icon)}</div><div class="history-copy"><strong>${escapeHtml(item.category)}</strong><small>${escapeHtml(item.account)} · ${formatDate(item.created_at)}${note}</small></div><div class="history-amount ${escapeHtml(item.kind)}">${item.kind === 'income' ? '+' : '−'}${escapeHtml(item.amount)}</div></article>`;
+}
+
+function renderDashboard(data) {
+  dashboardData = data;
+  const primary = data.currency_totals?.find(item => item.currency === 'KZT') || data.currency_totals?.[0] || {balance:data.balance,income:data.income,expense:data.expense};
+  $('balance').textContent = primary.balance;
+  $('income').textContent = `+${primary.income}`;
+  $('expense').textContent = `−${primary.expense}`;
+  $('periodLabel').textContent = data.period_label;
+  $('historyTitle').textContent = data.period_label;
+  $('historySubtitle').textContent = `Операции: ${data.period_label.toLowerCase()}`;
+  $('currencyTotals').innerHTML = (data.currency_totals || []).map(item => `<span class="currency-chip">${escapeHtml(item.currency)} · ${escapeHtml(item.balance)}</span>`).join('');
+
+  const accounts = data.accounts || [];
+  const accountMarkup = accounts.length ? accounts.map(accountCard).join('') : '<div class="empty-state">Счетов пока нет.<br>Создайте первый, чтобы начать учёт.</div>';
+  $('accounts').innerHTML = accountMarkup;
+  $('accountsFull').innerHTML = accountMarkup;
+
+  const categories = data.top_categories || [];
+  const max = Math.max(...categories.map(item => Number(item.amount_minor) || 0), 1);
+  $('topCategories').innerHTML = categories.length ? categories.map(item => `<div class="chart-row"><div class="chart-meta"><span>${escapeHtml(item.label)}</span><span>${escapeHtml(item.amount)}</span></div><div class="chart-track"><div class="chart-fill" style="width:${Math.max(8,(Number(item.amount_minor)||0)/max*100)}%"></div></div></div>`).join('') : '<div class="empty-state">Здесь появится структура расходов за выбранный период.</div>';
+
+  const history = data.history || [];
+  const empty = '<div class="empty-state">Операций за этот период пока нет.</div>';
+  $('historyPreview').innerHTML = history.length ? history.slice(0,5).map(historyItem).join('') : empty;
+  $('historyFull').innerHTML = history.length ? history.map(historyItem).join('') : empty;
+}
+
+async function loadDashboard() {
+  const params = new URLSearchParams({period:activePeriod});
+  if (activePeriod === 'custom') { params.set('start', customStart); params.set('end', customEnd); }
+  $('syncState').innerHTML = '<i></i>Обновляем';
+  const data = await api(`/api/dashboard?${params}`);
+  renderDashboard(data);
+  $('syncState').innerHTML = '<i></i>Синхронизировано';
+  return data;
+}
+
+async function enterApplication() {
+  await loadDashboard();
+  const me = await api('/api/me').catch(() => ({can_sign_out:false}));
+  $('signOutButton').classList.toggle('hidden', isMiniApp || isShortcut || !me.can_sign_out);
+  $('profileButton').classList.toggle('hidden', !authSession);
+  renderSettings();
+  showOnly('appScreen');
+  rememberActivity();
+}
+
+function navigate(section) {
+  document.querySelectorAll('[data-view]').forEach(view => view.classList.toggle('hidden', view.dataset.view !== section));
+  document.querySelectorAll('[data-section]').forEach(button => button.classList.toggle('active', button.dataset.section === section));
+  scrollTo({top:0,behavior:'smooth'});
+}
+
+document.querySelectorAll('[data-section]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.section)));
+
 function setAuthMode(mode) {
   authMode = mode;
+  $('authForm').classList.remove('hidden');
+  $('recoveryForm').classList.add('hidden');
+  $('authTabs').classList.remove('hidden');
   document.querySelectorAll('[data-auth-mode]').forEach(button => button.classList.toggle('active', button.dataset.authMode === mode));
-  $('authNameLabel').classList.toggle('hidden', mode !== 'signup');
-  $('authPasswordConfirmLabel').classList.toggle('hidden', mode !== 'signup');
-  $('authPasswordConfirm').required = mode === 'signup';
-  $('authPassword').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
-  $('authSubmit').textContent = mode === 'signup' ? 'Создать аккаунт' : 'Войти';
-  $('forgotPassword').classList.toggle('hidden', mode !== 'signin');
-  $('authStatus').textContent = '';
+  const signup = mode === 'signup';
+  $('authNameLabel').classList.toggle('hidden', !signup);
+  $('authPasswordConfirmLabel').classList.toggle('hidden', !signup);
+  $('authPasswordConfirm').required = signup;
+  $('authPassword').autocomplete = signup ? 'new-password' : 'current-password';
+  $('authTitle').textContent = signup ? 'Создайте аккаунт' : 'С возвращением';
+  $('authDescription').textContent = signup ? 'Почта нужна для входа и восстановления доступа.' : 'Войдите, чтобы продолжить вести финансы.';
+  $('authSubmit').textContent = signup ? 'Создать аккаунт' : 'Войти';
+  $('forgotPassword').classList.toggle('hidden', signup);
+  setStatus('authStatus');
 }
 
-document.querySelectorAll('[data-auth-mode]').forEach(button => button.onclick = () => setAuthMode(button.dataset.authMode));
-document.querySelectorAll('[data-password-toggle]').forEach(button => button.onclick = () => {
+document.querySelectorAll('[data-auth-mode]').forEach(button => button.addEventListener('click', () => setAuthMode(button.dataset.authMode)));
+document.querySelectorAll('[data-password-toggle]').forEach(button => button.addEventListener('click', () => {
   const input = $(button.dataset.passwordToggle);
-  const show = input.type === 'password';
-  input.type = show ? 'text' : 'password';
-  button.classList.toggle('visible', show);
-  button.textContent = show ? '🙈' : '👁';
-  button.setAttribute('aria-label', show ? 'Скрыть пароль' : 'Показать пароль');
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  button.textContent = visible ? 'Показать' : 'Скрыть';
+  button.setAttribute('aria-label', visible ? 'Показать пароль' : 'Скрыть пароль');
+}));
+
+$('authForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!authClient) return setStatus('authStatus','Вход временно недоступен','error');
+  const email = $('authEmail').value.trim().toLowerCase();
+  const password = $('authPassword').value;
+  if (!email || password.length < 8) return setStatus('authStatus','Проверьте email и пароль — минимум 8 символов','error');
+  if (authMode === 'signup' && password !== $('authPasswordConfirm').value) return setStatus('authStatus','Пароли не совпадают','error');
+  $('authSubmit').disabled = true;
+  setStatus('authStatus', authMode === 'signup' ? 'Создаём аккаунт…' : 'Входим…');
+  try {
+    const credentials = {email,password};
+    let result = authMode === 'signup'
+      ? await authClient.signUp.email({...credentials,name:$('authName').value.trim() || email.split('@')[0]})
+      : await authClient.signIn.email(credentials);
+    if (result?.error) throw new Error(friendlyError(result.error));
+    if (authMode === 'signup' && !result?.data?.session) {
+      result = await authClient.signIn.email(credentials);
+      if (result?.error) throw new Error(friendlyError(result.error));
+    }
+    await refreshAuthToken(3);
+    if (!authToken) throw new Error('Сессию не удалось открыть. Попробуйте войти ещё раз.');
+    await api('/api/auth/session');
+    localStorage.setItem(ACTIVITY_KEY,String(Date.now()));
+    setStatus('authStatus','Готово','success');
+    await enterApplication();
+  } catch (error) { setStatus('authStatus',friendlyError(error),'error'); }
+  finally { $('authSubmit').disabled = false; }
 });
 
-$('authForm').onsubmit = async event => {
+$('forgotPassword').addEventListener('click', () => {
+  $('recoveryEmail').value = $('authEmail').value.trim();
+  $('authForm').classList.add('hidden');
+  $('authTabs').classList.add('hidden');
+  $('recoveryForm').classList.remove('hidden');
+  setStatus('recoveryStatus');
+});
+$('backToSignIn').addEventListener('click', () => setAuthMode('signin'));
+$('recoveryForm').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!authClient) { $('authStatus').textContent = 'Вход по email пока недоступен'; return; }
-  $('authSubmit').disabled = true; $('authStatus').textContent = authMode === 'signup' ? 'Создаём аккаунт…' : 'Входим…';
+  const email = $('recoveryEmail').value.trim().toLowerCase();
+  $('recoverySubmit').disabled = true;
+  setStatus('recoveryStatus','Отправляем письмо…');
   try {
-    const credentials = {email:$('authEmail').value.trim().toLowerCase(), password:$('authPassword').value};
-    if (authMode === 'signup' && credentials.password !== $('authPasswordConfirm').value) {
-      throw new Error('Пароли не совпадают');
-    }
-    const signingUp = authMode === 'signup';
-    const result = signingUp
-      ? await authClient.signUp.email({...credentials, name:$('authName').value.trim() || credentials.email.split('@')[0]})
-      : await authClient.signIn.email(credentials);
-    if (result?.error) throw new Error(friendlyAuthError(result.error));
-    applyAuthResult(result);
-    if (!authToken) await refreshAuthToken({attempts:3});
-    if (!authToken && signingUp) {
-      const signInResult = await authClient.signIn.email(credentials);
-      if (signInResult?.error) throw new Error(friendlyAuthError(signInResult.error, 'Аккаунт создан. Выполните вход.'));
-      applyAuthResult(signInResult);
-      if (!authToken) await refreshAuthToken({attempts:3});
-    }
-    if (!authToken) throw new Error('Не удалось открыть сессию. Обновите страницу и попробуйте войти ещё раз.');
-    await api('/api/auth/session');
-    rememberActivity(true); startActivityTracking();
-    await refresh({throwOnError:true});
-    $('authStatus').textContent = '✓ Готово';
-  } catch (error) { $('authStatus').textContent = friendlyAuthError(error); }
-  finally { $('authSubmit').disabled = false; }
-};
-
-$('forgotPassword').onclick = async () => {
-  const email = $('authEmail').value.trim();
-  if (!email) { $('authStatus').textContent = 'Сначала укажите email'; return; }
-  try {
-    const result = await authClient.requestPasswordReset({email, redirectTo:`${location.origin}/?reset=1`});
+    const result = await authClient.requestPasswordReset({email,redirectTo:`${location.origin}/?reset=1`});
     if (result?.error) throw new Error(result.error.message || 'Не удалось отправить письмо');
-    $('authStatus').textContent = 'Письмо для восстановления отправлено';
-  } catch (error) { $('authStatus').textContent = error.message || String(error); }
-};
+    setStatus('recoveryStatus','Если аккаунт существует, письмо уже отправлено. Проверьте также папку «Спам».','success');
+  } catch (error) { setStatus('recoveryStatus',friendlyError(error),'error'); }
+  finally { $('recoverySubmit').disabled = false; }
+});
 
-$('resetForm').onsubmit = async event => {
+$('resetForm').addEventListener('submit', async event => {
   event.preventDefault();
-  const resetToken = new URLSearchParams(location.search).get('token') || '';
+  const password = $('resetPassword').value;
+  if (password !== $('resetPasswordConfirm').value) return setStatus('resetStatus','Пароли не совпадают','error');
+  const token = new URLSearchParams(location.search).get('token') || '';
   try {
-    const newPassword = $('resetPassword').value;
-    if (newPassword !== $('resetPasswordConfirm').value) throw new Error('Пароли не совпадают');
-    const result = await authClient.resetPassword({newPassword, token:resetToken});
-    if (result?.error) throw new Error(result.error.message || 'Не удалось изменить пароль');
-    $('resetStatus').textContent = '✓ Пароль изменён. Теперь можно войти.';
-    history.replaceState({}, '', '/');
-  } catch (error) { $('resetStatus').textContent = error.message || String(error); }
-};
-$('closeReset').onclick = () => $('resetDialog').close();
+    const result = await authClient.resetPassword({newPassword:password,token});
+    if (result?.error) throw new Error(result.error.message || 'Ссылка недействительна или устарела');
+    setStatus('resetStatus','Пароль изменён. Теперь войдите с новым паролем.','success');
+    history.replaceState({},'',location.pathname);
+    setTimeout(() => $('resetDialog').close(),1200);
+  } catch (error) { setStatus('resetStatus',friendlyError(error),'error'); }
+});
 
-$('signOutButton').onclick = async () => {
-  await signOutEverywhere();
-};
+async function loadOptions() {
+  const data = await api(`/api/options?kind=${activeKind}`);
+  $('categorySelect').innerHTML = '<option value="">Выберите категорию</option>' + data.categories.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
+  $('accountSelect').innerHTML = '<option value="">Выберите счёт</option>' + data.accounts.map(item => `<option value="${item.id}" data-currency="${escapeHtml(item.currency)}">${escapeHtml(item.name)} · ${escapeHtml(item.balance)}</option>`).join('');
+  $('transactionCurrencySymbol').textContent = '₸';
+}
 
+async function openTransaction(kind = 'expense') {
+  activeKind = kind;
+  $('transactionStatus').textContent = '';
+  document.querySelectorAll('[data-kind]').forEach(button => button.classList.toggle('active', button.dataset.kind === kind));
+  $('transactionTitle').textContent = kind === 'expense' ? 'Новый расход' : 'Новый доход';
+  $('sheetBackdrop').classList.remove('hidden');
+  $('transactionSheet').classList.add('open');
+  $('transactionSheet').setAttribute('aria-hidden','false');
+  await loadOptions().catch(error => setStatus('transactionStatus',friendlyError(error),'error'));
+  setTimeout(() => $('amountInput').focus(),250);
+}
+
+function closeTransaction() {
+  $('sheetBackdrop').classList.add('hidden');
+  $('transactionSheet').classList.remove('open');
+  $('transactionSheet').setAttribute('aria-hidden','true');
+}
+
+document.querySelectorAll('[data-new-kind]').forEach(button => button.addEventListener('click', () => openTransaction(button.dataset.newKind || 'expense')));
+$('mobileFab').addEventListener('click', () => openTransaction('expense'));
+$('closeTransaction').addEventListener('click', closeTransaction);
+$('sheetBackdrop').addEventListener('click', closeTransaction);
+document.querySelectorAll('[data-kind]').forEach(button => button.addEventListener('click', async () => {
+  activeKind = button.dataset.kind;
+  $('transactionTitle').textContent = activeKind === 'expense' ? 'Новый расход' : 'Новый доход';
+  document.querySelectorAll('[data-kind]').forEach(item => item.classList.toggle('active',item === button));
+  await loadOptions();
+}));
+$('accountSelect').addEventListener('change', () => {
+  const currency = $('accountSelect').selectedOptions[0]?.dataset.currency || 'KZT';
+  $('transactionCurrencySymbol').textContent = currencySymbols[currency] || currency;
+});
+$('transactionForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  $('saveTransaction').disabled = true;
+  setStatus('transactionStatus','Сохраняем…');
+  try {
+    await api('/api/transactions',{method:'POST',body:JSON.stringify({kind:activeKind,amount:$('amountInput').value,category:$('categorySelect').value,account_id:$('accountSelect').value,note:$('noteInput').value})});
+    event.currentTarget.reset();
+    tg?.HapticFeedback?.notificationOccurred('success');
+    await loadDashboard();
+    setStatus('transactionStatus','Операция сохранена','success');
+    toast('Операция сохранена');
+    setTimeout(closeTransaction,500);
+  } catch (error) { setStatus('transactionStatus',friendlyError(error),'error'); tg?.HapticFeedback?.notificationOccurred('error'); }
+  finally { $('saveTransaction').disabled = false; }
+});
+
+function openAccountDialog() {
+  $('accountForm').reset();
+  accountType = 'card';
+  $('accountBalance').value = '0';
+  $('accountCurrencySymbol').textContent = '₸';
+  $('depositFields').classList.add('hidden');
+  document.querySelectorAll('[data-account-type]').forEach(button => button.classList.toggle('active',button.dataset.accountType === 'card'));
+  setStatus('accountStatus');
+  $('accountDialog').showModal();
+}
+$('newAccount').addEventListener('click',openAccountDialog);
+$('quickNewAccount').addEventListener('click',openAccountDialog);
+document.querySelectorAll('[data-create-account]').forEach(button => button.addEventListener('click',openAccountDialog));
+document.querySelectorAll('[data-account-type]').forEach(button => button.addEventListener('click', () => {
+  accountType = button.dataset.accountType;
+  document.querySelectorAll('[data-account-type]').forEach(item => item.classList.toggle('active',item === button));
+  $('depositFields').classList.toggle('hidden',accountType !== 'deposit');
+}));
+$('accountCurrency').addEventListener('change', () => $('accountCurrencySymbol').textContent = currencySymbols[$('accountCurrency').value]);
+$('accountForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  setStatus('accountStatus','Создаём счёт…');
+  try {
+    await api('/api/accounts',{method:'POST',body:JSON.stringify({name:$('accountName').value,balance:$('accountBalance').value,account_type:accountType,currency:$('accountCurrency').value,nominal_interest_rate:$('nominalRate').value,effective_interest_rate:$('effectiveRate').value,daily_interest_enabled:$('dailyInterest').checked})});
+    $('accountDialog').close();
+    await loadDashboard();
+    toast('Счёт создан');
+  } catch (error) { setStatus('accountStatus',friendlyError(error),'error'); }
+});
+
+$('newCategory').addEventListener('click', () => { setStatus('categoryStatus'); $('categoryForm').reset(); $('categoryDialog').showModal(); });
+$('categoryForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  setStatus('categoryStatus','Добавляем…');
+  try {
+    await api('/api/categories',{method:'POST',body:JSON.stringify({kind:activeKind,name:$('categoryName').value})});
+    $('categoryDialog').close();
+    await loadOptions();
+    toast('Категория добавлена');
+  } catch (error) { setStatus('categoryStatus',friendlyError(error),'error'); }
+});
+
+document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $(button.dataset.closeDialog).close()));
+
+document.querySelectorAll('[data-period]').forEach(button => button.addEventListener('click', async () => {
+  const period = button.dataset.period;
+  if (period === 'custom') { $('customPeriod').classList.remove('hidden'); return; }
+  activePeriod = period;
+  $('customPeriod').classList.add('hidden');
+  document.querySelectorAll('[data-period]').forEach(item => item.classList.toggle('active',item === button));
+  await loadDashboard().catch(error => toast(friendlyError(error),'error'));
+}));
+$('applyPeriod').addEventListener('click', async () => {
+  customStart = $('periodStart').value;
+  customEnd = $('periodEnd').value;
+  if (!customStart || !customEnd) return toast('Выберите обе даты','error');
+  activePeriod = 'custom';
+  document.querySelectorAll('[data-period]').forEach(button => button.classList.toggle('active',button.dataset.period === 'custom'));
+  await loadDashboard().catch(error => toast(friendlyError(error),'error'));
+});
+$('toggleBalances').addEventListener('click', () => document.body.classList.toggle('privacy-mode'));
+
+function renderSettings() {
+  if (authSession) {
+    $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Аккаунт</span><h3>${escapeHtml(authSession.user?.email || 'Email-аккаунт')}</h3><p>Пароль, безопасность и привязка Telegram находятся в личном кабинете.</p><button id="openProfileSettings" class="button button-primary" type="button">Открыть личный кабинет</button></article><article class="settings-card"><span class="eyebrow">Сессия</span><h3>Автовыход через 3 дня</h3><p>Если вы не пользуетесь сайтом три дня, вход будет завершён автоматически.</p><button id="settingsSignOut" class="button" type="button">Выйти сейчас</button></article><article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового в Purpose Finance</h3><p>История улучшений сайта и Telegram-бота.</p><button id="settingsUpdates" class="button" type="button">Посмотреть обновления</button></article>`;
+    $('openProfileSettings').onclick = openProfile;
+    $('settingsSignOut').onclick = () => signOut();
+    $('settingsUpdates').onclick = openUpdates;
+  } else {
+    $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Telegram Mini App</span><h3>Вы вошли автоматически</h3><p>Аккаунт определён Telegram. Пароль и отдельная регистрация здесь не нужны.</p></article><article class="settings-card"><span class="eyebrow">Синхронизация</span><h3>Одна база с ботом</h3><p>Все изменения, сделанные здесь или в чате с ботом, отображаются одинаково.</p></article><article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового?</h3><p>Посмотрите последние изменения продукта.</p><button id="settingsUpdates" class="button" type="button">Открыть</button></article>`;
+    $('settingsUpdates').onclick = openUpdates;
+  }
+}
+
+function storeLink(token, expiresIn = 600) {
+  telegramLinkToken = token;
+  localStorage.setItem(LINK_KEY,JSON.stringify({token,expires:Date.now()+expiresIn*1000}));
+}
+function restoreLink() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LINK_KEY) || 'null');
+    if (!saved?.token || saved.expires < Date.now()) return false;
+    telegramLinkToken = saved.token;
+    return true;
+  } catch (_) { return false; }
+}
+function stopLinkPolling() { clearInterval(telegramLinkTimer); telegramLinkTimer = null; }
+function clearLink() { telegramLinkToken = ''; localStorage.removeItem(LINK_KEY); stopLinkPolling(); }
 function renderTelegramLink(profile) {
   const linked = profile?.telegram;
-  if (linked) {
-    const title = linked.display_name || (linked.username ? `@${linked.username}` : `Telegram ID ${linked.user_id}`);
-    $('telegramLinkState').innerHTML = `<strong>✓ Telegram привязан</strong><small>${escapeHtml(title)}</small>`;
-  } else {
-    $('telegramLinkState').innerHTML = '<strong>Telegram не привязан</strong><small>Данные сайта пока отделены от бота</small>';
-  }
-  $('linkTelegramButton').classList.toggle('hidden', Boolean(linked));
-  $('linkTelegramButton').disabled = false;
-  $('unlinkTelegramButton').classList.toggle('hidden', !linked);
+  $('telegramLinkTitle').textContent = linked ? 'Telegram привязан' : 'Telegram не привязан';
+  $('telegramLinkDescription').textContent = linked ? (linked.display_name || (linked.username ? `@${linked.username}` : `Telegram ID ${linked.user_id}`)) : 'Привяжите бота, чтобы сайт и Telegram использовали одни данные.';
+  $('linkTelegramButton').classList.toggle('hidden',Boolean(linked));
+  $('checkTelegramLinkButton').classList.toggle('hidden',Boolean(linked));
+  $('unlinkTelegramButton').classList.toggle('hidden',!linked);
 }
-
-function storeTelegramLinkRequest(tokenValue, expiresIn = 600) {
-  telegramLinkToken = tokenValue;
-  localStorage.setItem(TELEGRAM_LINK_KEY, JSON.stringify({token:tokenValue, expiresAt:Date.now() + expiresIn * 1000}));
-}
-
-function restoreTelegramLinkRequest() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(TELEGRAM_LINK_KEY) || 'null');
-    if (!saved?.token || Number(saved.expiresAt) <= Date.now()) {
-      clearTelegramLinkRequest();
-      return false;
-    }
-    telegramLinkToken = String(saved.token);
-    return true;
-  } catch (_) {
-    clearTelegramLinkRequest();
-    return false;
-  }
-}
-
-function clearTelegramLinkRequest() {
-  telegramLinkToken = '';
-  localStorage.removeItem(TELEGRAM_LINK_KEY);
-  clearInterval(telegramLinkPoll);
-  telegramLinkPoll = null;
-}
-
-function startTelegramLinkPolling() {
-  clearInterval(telegramLinkPoll);
-  telegramLinkPoll = setInterval(checkTelegramLink, 2000);
-}
-
-async function loadProfile() {
-  const profile = await api('/api/profile');
-  renderTelegramLink(profile);
-  return profile;
-}
-
-async function checkTelegramLink() {
+async function checkLink() {
   if (!telegramLinkToken) return;
-  try {
-    const status = await api(`/api/profile/telegram/link/status?token=${encodeURIComponent(telegramLinkToken)}`);
-    if (status.status === 'approved') {
-      clearTelegramLinkRequest();
-      $('profileStatus').textContent = '✓ Telegram привязан, данные синхронизированы';
-      await loadProfile(); await refresh();
-    } else if (status.status === 'expired') {
-      clearTelegramLinkRequest();
-      $('profileStatus').textContent = 'Ссылка истекла. Нажмите «Привязать» ещё раз.';
-      $('linkTelegramButton').disabled = false;
-    }
-  } catch (error) {
-    $('profileStatus').textContent = error.message || String(error);
-  }
+  const result = await api(`/api/profile/telegram/link/status?token=${encodeURIComponent(telegramLinkToken)}`);
+  if (result.status === 'approved') { clearLink(); setStatus('profileStatus','Telegram успешно привязан','success'); renderTelegramLink(await api('/api/profile')); await loadDashboard(); }
+  if (result.status === 'expired') { clearLink(); setStatus('profileStatus','Ссылка истекла. Создайте новую.','error'); }
 }
-
+function startLinkPolling() { stopLinkPolling(); telegramLinkTimer = setInterval(() => checkLink().catch(() => {}),2500); }
 async function openProfile() {
+  $('profileEmail').textContent = authSession?.user?.email || '—';
   $('profileDialog').showModal();
-  $('profileStatus').textContent = '';
-  $('profileEmail').textContent = authSession?.user?.email || 'Email-аккаунт';
-  $('telegramLinkState').innerHTML = '<span class="loader"></span>';
-  try {
-    await loadProfile();
-    if (restoreTelegramLinkRequest()) {
-      $('profileStatus').textContent = 'Ожидаем подтверждение в Telegram…';
-      startTelegramLinkPolling();
-      await checkTelegramLink();
-    }
-  }
-  catch (error) { $('telegramLinkState').innerHTML = `<strong>${escapeHtml(error.message)}</strong>`; }
+  setStatus('profileStatus');
+  try { renderTelegramLink(await api('/api/profile')); if (restoreLink()) { startLinkPolling(); await checkLink(); } }
+  catch (error) { setStatus('profileStatus',friendlyError(error),'error'); }
 }
-
-$('profileButton').onclick = openProfile;
-$('closeProfile').onclick = () => $('profileDialog').close();
-$('linkTelegramButton').onclick = async () => {
-  const button = $('linkTelegramButton'); button.disabled = true;
-  $('profileStatus').textContent = 'Создаём безопасный запрос…';
-  try {
-    const data = await api('/api/profile/telegram/link/start', {method:'POST'});
-    storeTelegramLinkRequest(data.token, data.expires_in || 600);
-    $('profileStatus').textContent = 'Подтвердите привязку в чате с ботом, затем вернитесь сюда';
-    startTelegramLinkPolling();
-    location.href = data.telegram_url;
-  } catch (error) {
-    $('profileStatus').textContent = error.message || String(error);
-    button.disabled = false;
-  }
-};
-$('checkTelegramLinkButton').onclick = async () => {
-  if (!restoreTelegramLinkRequest()) {
-    $('profileStatus').textContent = 'Нет активного запроса. Нажмите «Привязать Telegram».';
-    return;
-  }
-  $('profileStatus').textContent = 'Проверяем подтверждение…';
-  await checkTelegramLink();
-};
-$('unlinkTelegramButton').onclick = async () => {
-  if (!confirm('Отвязать Telegram? Данные останутся на сайте, а бот начнёт с отдельного профиля.')) return;
-  const button = $('unlinkTelegramButton'); button.disabled = true;
-  $('profileStatus').textContent = 'Отвязываем…';
-  try {
-    await api('/api/profile/telegram/unlink', {method:'POST'});
-    $('profileStatus').textContent = 'Telegram отвязан. Данные сайта сохранены.';
-    await loadProfile(); await refresh();
-  } catch (error) { $('profileStatus').textContent = error.message || String(error); }
-  finally { button.disabled = false; }
-};
-
-$('changePasswordForm').onsubmit = async event => {
+$('profileButton').addEventListener('click',openProfile);
+$('linkTelegramButton').addEventListener('click',async () => {
+  setStatus('profileStatus','Создаём запрос…');
+  try { const data = await api('/api/profile/telegram/link/start',{method:'POST'}); storeLink(data.token,data.expires_in); startLinkPolling(); setStatus('profileStatus','Подтвердите привязку в чате с ботом и вернитесь сюда.'); location.href = data.telegram_url; }
+  catch (error) { setStatus('profileStatus',friendlyError(error),'error'); }
+});
+$('checkTelegramLinkButton').addEventListener('click',async () => {
+  if (!restoreLink()) return setStatus('profileStatus','Сначала нажмите «Привязать»','error');
+  setStatus('profileStatus','Проверяем подтверждение…');
+  await checkLink().catch(error => setStatus('profileStatus',friendlyError(error),'error'));
+});
+$('unlinkTelegramButton').addEventListener('click',async () => {
+  if (!confirm('Отвязать Telegram? Финансовые данные останутся в аккаунте сайта.')) return;
+  try { await api('/api/profile/telegram/unlink',{method:'POST'}); renderTelegramLink(await api('/api/profile')); setStatus('profileStatus','Telegram отвязан','success'); }
+  catch (error) { setStatus('profileStatus',friendlyError(error),'error'); }
+});
+$('changePasswordForm').addEventListener('submit',async event => {
   event.preventDefault();
-  const button = $('changePasswordSubmit');
   const currentPassword = $('currentPassword').value;
   const newPassword = $('newPassword').value;
-  const confirmation = $('newPasswordConfirm').value;
-  if (newPassword !== confirmation) {
-    $('changePasswordStatus').textContent = 'Пароли не совпадают';
-    return;
-  }
-  if (currentPassword === newPassword) {
-    $('changePasswordStatus').textContent = 'Новый пароль должен отличаться от текущего';
-    return;
-  }
-  button.disabled = true;
-  $('changePasswordStatus').textContent = 'Меняем пароль…';
+  if (newPassword !== $('newPasswordConfirm').value) return setStatus('changePasswordStatus','Пароли не совпадают','error');
+  $('changePasswordSubmit').disabled = true;
+  setStatus('changePasswordStatus','Меняем пароль…');
   try {
-    const result = await authClient.changePassword({
-      currentPassword,
-      newPassword,
-      revokeOtherSessions:$('revokeOtherSessions').checked,
-    });
-    if (result?.error) throw new Error(friendlyAuthError(result.error, 'Не удалось изменить пароль'));
-    applyAuthResult(result);
-    await refreshAuthToken({attempts:3});
+    const result = await authClient.changePassword({currentPassword,newPassword,revokeOtherSessions:$('revokeOtherSessions').checked});
+    if (result?.error) throw new Error(result.error.message || 'Не удалось изменить пароль');
+    await refreshAuthToken(3);
     event.currentTarget.reset();
     $('revokeOtherSessions').checked = true;
-    $('changePasswordStatus').textContent = '✓ Пароль изменён';
-  } catch (error) {
-    $('changePasswordStatus').textContent = friendlyAuthError(error, 'Не удалось изменить пароль');
-  } finally {
-    button.disabled = false;
-  }
-};
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && telegramLinkToken) checkTelegramLink();
+    setStatus('changePasswordStatus','Пароль изменён','success');
+  } catch (error) { setStatus('changePasswordStatus',friendlyError(error),'error'); }
+  finally { $('changePasswordSubmit').disabled = false; }
 });
 
-async function openAdmin() {
-  $('adminDialog').showModal(); $('adminUsers').innerHTML = '<div class="empty">Загружаем пользователей…</div>';
+async function openUpdates() {
+  $('updatesDialog').showModal();
+  $('updatesList').innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
   try {
-    const data = await api('/api/admin/users');
-    $('adminUsers').innerHTML = '<button class="admin-user-card" data-owner="self"><strong>↩ Мои данные</strong><small>Вернуться к собственной сводке</small></button>' + data.users.map(user => {
-      const title = user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
-      const accounts = user.accounts.length ? user.accounts.map(account => `${accountTypeMeta[account.account_type]?.icon || '💳'} ${escapeHtml(account.name)} — ${escapeHtml(account.balance)}`).join('<br>') : 'Счетов пока нет';
-      return `<button class="admin-user-card" data-owner="${user.user_id}"><strong>${escapeHtml(title)}</strong><small>${accounts}</small></button>`;
-    }).join('');
-    document.querySelectorAll('.admin-user-card').forEach(button => button.onclick = async () => {
-      viewOwnerId = button.dataset.owner === 'self' ? null : Number(button.dataset.owner);
-      $('adminDialog').close(); await refresh();
-    });
-  } catch (error) { $('adminUsers').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+    const data = await api('/api/whats-new');
+    $('updatesList').innerHTML = (data.releases || []).map(release => `<article class="release-card"><h3>Версия ${escapeHtml(release.version)}</h3><time>${escapeHtml(release.date)}</time><p>${escapeHtml(release.title)}</p><ul>${release.items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></article>`).join('');
+  } catch (error) { $('updatesList').innerHTML = `<div class="empty-state">${escapeHtml(friendlyError(error))}</div>`; }
 }
-$('adminButton').onclick = openAdmin;
-$('closeAdmin').onclick = () => $('adminDialog').close();
+$('whatsNewButton').addEventListener('click',openUpdates);
+$('signOutButton').addEventListener('click',() => signOut());
+$('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-  const loginRequest = new URLSearchParams(location.search).get('login_request');
-  if (loginRequest && initData) {
-    try {
-      await fetch('/api/auth/telegram/approve', {
-        method:'POST',
-        headers:{'Content-Type':'application/json', 'X-Telegram-Init-Data':initData},
-        body:JSON.stringify({token:loginRequest}),
-      });
-      const cleanUrl = new URL(location.href);
-      cleanUrl.searchParams.delete('login_request');
-      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
-    } catch (_) {}
-  }
+  $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
-    const config = await fetch('/api/config').then(response => response.json());
-    if (config.auth_enabled && window.PurposeAuthBundle?.createClient) {
-      authClient = window.PurposeAuthBundle.createClient(config.auth_url);
-      await refreshAuthToken();
+    if (isMiniApp || isShortcut) {
+      await enterApplication();
+      return;
     }
-    if (config.telegram_login_enabled) renderTelegramLogin(config.telegram_bot_username);
-  } catch (_) {}
-  if (!initData && !token && inactivityExpired()) {
-    await signOutEverywhere({inactive:true});
-    return;
-  }
-  if (new URLSearchParams(location.search).get('reset') === '1' || new URLSearchParams(location.search).get('token')) {
-    $('resetDialog').showModal();
-  }
-  await refresh();
-  if (!$('dashboard').classList.contains('hidden') && !initData && !token) {
-    startActivityTracking();
-    if (restoreTelegramLinkRequest()) {
-      startTelegramLinkPolling();
-      checkTelegramLink().catch(() => {});
+    const configResponse = await fetch('/api/config');
+    const config = await configResponse.json();
+    if (!config.auth_enabled || !window.PurposeAuthBundle?.createClient) throw new Error('Сервис входа временно недоступен');
+    authClient = window.PurposeAuthBundle.createClient(config.auth_url);
+    await refreshAuthToken(2);
+    if (authSession && sessionInactive()) { await signOut({inactive:true}); return; }
+    const params = new URLSearchParams(location.search);
+    if (params.get('reset') === '1' || params.get('token')) $('resetDialog').showModal();
+    if (authToken) {
+      try { await api('/api/auth/session'); await enterApplication(); return; }
+      catch (_) { authSession = null; authToken = ''; }
     }
+    showOnly('authScreen');
+  } catch (error) {
+    $('bootMessage').textContent = friendlyError(error);
+    if (isMiniApp) showOnly('miniAppError');
+    else { showOnly('authScreen'); setStatus('authStatus',friendlyError(error),'error'); }
   }
 }
+
+document.addEventListener('visibilitychange',() => {
+  if (!document.hidden && telegramLinkToken) checkLink().catch(() => {});
+});
 
 boot();
