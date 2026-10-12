@@ -311,6 +311,56 @@ def money(amount_minor: int, currency: str = "KZT") -> str:
     return f"{value:,.2f}".replace(",", " ") + f" {symbol}"
 
 
+def calculated_effective_rate(nominal_rate_bps: int | None) -> str | None:
+    if nominal_rate_bps is None:
+        return None
+    daily = Decimal(nominal_rate_bps) / Decimal(10000) / Decimal(365)
+    effective = ((Decimal(1) + daily) ** 365 - Decimal(1)) * Decimal(100)
+    return f"{effective.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):g}%"
+
+
+def account_payload(
+    item: object,
+    interest_summary: dict[str, object] | None = None,
+) -> dict[str, object]:
+    summary = interest_summary or {}
+    nominal = getattr(item, "interest_rate_bps")
+    effective = getattr(item, "effective_interest_rate_bps")
+    balance_minor = int(getattr(item, "balance_minor"))
+    currency = str(getattr(item, "currency"))
+    estimated_daily = (
+        int(
+            (
+                Decimal(balance_minor)
+                * Decimal(nominal)
+                / Decimal(10000)
+                / Decimal(365)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+        if nominal is not None and balance_minor > 0
+        else 0
+    )
+    return {
+        "id": getattr(item, "id"),
+        "name": getattr(item, "name"),
+        "balance": money(balance_minor, currency),
+        "balance_minor": balance_minor,
+        "currency": currency,
+        "account_type": getattr(item, "account_type"),
+        "interest_rate": f"{Decimal(nominal) / 100:g}%" if nominal is not None else None,
+        "nominal_interest_rate": f"{Decimal(nominal) / 100:g}%" if nominal is not None else None,
+        "nominal_interest_rate_value": float(Decimal(nominal) / 100) if nominal is not None else None,
+        "effective_interest_rate": f"{Decimal(effective) / 100:g}%" if effective is not None else None,
+        "effective_interest_rate_value": float(Decimal(effective) / 100) if effective is not None else None,
+        "calculated_effective_rate": calculated_effective_rate(nominal),
+        "daily_interest_enabled": bool(getattr(item, "daily_interest_enabled")),
+        "estimated_daily_interest": money(estimated_daily, currency),
+        "interest_accrued_today": money(int(summary.get("today_minor", 0)), currency),
+        "interest_accrued_total": money(int(summary.get("total_minor", 0)), currency),
+        "last_interest_date": summary.get("last_accrual_date"),
+    }
+
+
 def period_bounds(
     period: str,
     start: str | None,
@@ -597,7 +647,9 @@ async def dashboard(
     now = datetime.now(TIMEZONE)
     start_at, end_at, period_label = period_bounds(period, start, end)
     await db.ensure_default_account(user_id, now)
+    await db.accrue_deposit_interest(user_id, now)
     account_items = await db.accounts(user_id)
+    interest_summaries = await db.deposit_interest_summaries(user_id, now.date())
     totals = await db.totals_by_currency(user_id, start_at, end_at)
     history = await db.recent(user_id, limit=100, start_at=start_at, end_at=end_at)
     balances: dict[str, int] = {}
@@ -628,32 +680,7 @@ async def dashboard(
             }
             for currency in currencies
         ],
-        "accounts": [
-            {
-                "id": item.id,
-                "name": item.name,
-                "balance": money(item.balance_minor, item.currency),
-                "currency": item.currency,
-                "account_type": item.account_type,
-                "interest_rate": (
-                    f"{Decimal(item.interest_rate_bps) / 100:g}%"
-                    if item.interest_rate_bps is not None
-                    else None
-                ),
-                "nominal_interest_rate": (
-                    f"{Decimal(item.interest_rate_bps) / 100:g}%"
-                    if item.interest_rate_bps is not None
-                    else None
-                ),
-                "effective_interest_rate": (
-                    f"{Decimal(item.effective_interest_rate_bps) / 100:g}%"
-                    if item.effective_interest_rate_bps is not None
-                    else None
-                ),
-                "daily_interest_enabled": item.daily_interest_enabled,
-            }
-            for item in account_items
-        ],
+        "accounts": [account_payload(item, interest_summaries.get(item.id)) for item in account_items],
         "top_categories": [
             {
                 "label": category_label("expense", key),
@@ -695,6 +722,7 @@ async def options(request: Request, kind: str = "expense") -> dict[str, object]:
     defaults = EXPENSE_CATEGORIES if kind == "expense" else INCOME_CATEGORIES
     custom = await db.custom_categories(user_id, kind)
     await db.ensure_default_account(user_id, datetime.now(TIMEZONE))
+    await db.accrue_deposit_interest(user_id, datetime.now(TIMEZONE))
     accounts = await db.accounts(user_id)
     category_items = [{"value": key, "label": label} for key, label in defaults.items()] + [
         {"value": f"custom|{item.name}", "label": custom_label(item.name)}
@@ -859,6 +887,59 @@ async def create_account(request: Request) -> dict[str, object]:
         ),
         "daily_interest_enabled": item.daily_interest_enabled,
     }
+
+
+@app.patch("/api/accounts/{account_id}")
+async def edit_account(account_id: int, request: Request) -> dict[str, object]:
+    user_id = await authorized_user(request)
+    now = datetime.now(TIMEZONE)
+    await db.accrue_deposit_interest(user_id, now)
+    current = await db.get_account(account_id, user_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректные данные счёта")
+    name = " ".join(str(payload.get("name", current.name)).strip().split())
+    if not 2 <= len(name) <= 24 or "|" in name:
+        raise HTTPException(status_code=400, detail="Название: от 2 до 24 символов")
+    balance_minor = parse_amount(
+        payload.get("balance", Decimal(current.balance_minor) / 100),
+        allow_negative=True,
+    )
+    if balance_minor is None:
+        raise HTTPException(status_code=400, detail="Введите корректный остаток")
+    account_type = str(payload.get("account_type", current.account_type))
+    if account_type not in {"card", "deposit", "cash"}:
+        raise HTTPException(status_code=400, detail="Выберите тип счёта")
+    nominal_rate: int | None = None
+    effective_rate: int | None = None
+    daily_enabled = False
+    if account_type == "deposit":
+        nominal_rate = parse_interest_rate(
+            payload.get("nominal_interest_rate", payload.get("interest_rate", ""))
+        )
+        effective_rate = parse_interest_rate(payload.get("effective_interest_rate", ""))
+        if nominal_rate is None:
+            raise HTTPException(status_code=400, detail="Номинальная ставка должна быть от 0 до 100%")
+        if effective_rate is None:
+            raise HTTPException(status_code=400, detail="Эффективная ставка должна быть от 0 до 100%")
+        daily_enabled = bool(payload.get("daily_interest_enabled", False))
+    updated = await db.update_account(
+        account_id,
+        user_id,
+        name,
+        balance_minor,
+        account_type,
+        nominal_rate,
+        effective_rate,
+        daily_enabled,
+        now,
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Не удалось сохранить: проверьте название счёта")
+    summaries = await db.deposit_interest_summaries(user_id, now.date())
+    return {"ok": True, **account_payload(updated, summaries.get(updated.id))}
 
 
 @app.post("/api/categories")

@@ -149,9 +149,9 @@ function accountCard(item) {
   let details = `${meta.label} · ${escapeHtml(item.currency)}`;
   if (item.account_type === 'deposit') {
     details = `Ном. ${escapeHtml(item.nominal_interest_rate || item.interest_rate || '—')} · Эфф. ${escapeHtml(item.effective_interest_rate || '—')}`;
-    if (item.daily_interest_enabled) details += ' · ежедневно';
+    if (item.daily_interest_enabled) details += ` · ежедневно<br>Сегодня +${escapeHtml(item.interest_accrued_today || '0')} · примерно ${escapeHtml(item.estimated_daily_interest || '0')}/день · расчётная эфф. ${escapeHtml(item.calculated_effective_rate || '—')}`;
   }
-  return `<article class="account-card ${escapeHtml(item.account_type)}"><div class="account-head"><span>${escapeHtml(item.name)}</span><span class="account-icon">${meta.icon}</span></div><strong>${escapeHtml(item.balance)}</strong><small>${details}</small></article>`;
+  return `<button type="button" class="account-card ${escapeHtml(item.account_type)}" data-edit-account="${item.id}"><div class="account-head"><span>${escapeHtml(item.name)}</span><span class="account-icon">${meta.icon}</span></div><strong>${escapeHtml(item.balance)}</strong><small>${details}</small></button>`;
 }
 
 function formatDate(value) {
@@ -180,6 +180,7 @@ function renderDashboard(data) {
   const accountMarkup = accounts.length ? accounts.map(accountCard).join('') : '<div class="empty-state">Счетов пока нет.<br>Создайте первый, чтобы начать учёт.</div>';
   $('accounts').innerHTML = accountMarkup;
   $('accountsFull').innerHTML = accountMarkup;
+  document.querySelectorAll('[data-edit-account]').forEach(button => button.addEventListener('click', () => openEditAccount(Number(button.dataset.editAccount))));
 
   const categories = data.top_categories || [];
   const max = Math.max(...categories.map(item => Number(item.amount_minor) || 0), 1);
@@ -370,8 +371,40 @@ function openAccountDialog() {
   accountType = 'card';
   $('accountBalance').value = '0';
   $('accountCurrencySymbol').textContent = '₸';
+  $('accountCurrency').disabled = false;
+  $('accountCurrencyHint').classList.add('hidden');
+  $('accountDialog').dataset.mode = 'create';
+  $('accountDialog').dataset.accountId = '';
+  $('accountDialogEyebrow').textContent = 'Добавление';
+  $('accountDialogTitle').textContent = 'Новый счёт';
+  $('accountSubmit').textContent = 'Создать счёт';
   $('depositFields').classList.add('hidden');
   document.querySelectorAll('[data-account-type]').forEach(button => button.classList.toggle('active',button.dataset.accountType === 'card'));
+  setStatus('accountStatus');
+  $('accountDialog').showModal();
+}
+
+function openEditAccount(accountId) {
+  const item = dashboardData?.accounts?.find(account => Number(account.id) === Number(accountId));
+  if (!item) return;
+  $('accountForm').reset();
+  accountType = item.account_type || 'card';
+  $('accountDialog').dataset.mode = 'edit';
+  $('accountDialog').dataset.accountId = String(item.id);
+  $('accountDialogEyebrow').textContent = 'Редактирование';
+  $('accountDialogTitle').textContent = item.name;
+  $('accountSubmit').textContent = 'Сохранить изменения';
+  $('accountName').value = item.name;
+  $('accountBalance').value = String((Number(item.balance_minor) || 0) / 100).replace('.', ',');
+  $('accountCurrency').value = item.currency;
+  $('accountCurrency').disabled = true;
+  $('accountCurrencyHint').classList.remove('hidden');
+  $('accountCurrencySymbol').textContent = currencySymbols[item.currency] || item.currency;
+  $('nominalRate').value = item.nominal_interest_rate_value ?? '';
+  $('effectiveRate').value = item.effective_interest_rate_value ?? '';
+  $('dailyInterest').checked = Boolean(item.daily_interest_enabled);
+  $('depositFields').classList.toggle('hidden',accountType !== 'deposit');
+  document.querySelectorAll('[data-account-type]').forEach(button => button.classList.toggle('active',button.dataset.accountType === accountType));
   setStatus('accountStatus');
   $('accountDialog').showModal();
 }
@@ -388,10 +421,12 @@ $('accountForm').addEventListener('submit', async event => {
   event.preventDefault();
   setStatus('accountStatus','Создаём счёт…');
   try {
-    await api('/api/accounts',{method:'POST',body:JSON.stringify({name:$('accountName').value,balance:$('accountBalance').value,account_type:accountType,currency:$('accountCurrency').value,nominal_interest_rate:$('nominalRate').value,effective_interest_rate:$('effectiveRate').value,daily_interest_enabled:$('dailyInterest').checked})});
+    const editing = $('accountDialog').dataset.mode === 'edit';
+    const accountId = $('accountDialog').dataset.accountId;
+    await api(editing ? `/api/accounts/${accountId}` : '/api/accounts',{method:editing ? 'PATCH' : 'POST',body:JSON.stringify({name:$('accountName').value,balance:$('accountBalance').value,account_type:accountType,currency:$('accountCurrency').value,nominal_interest_rate:$('nominalRate').value,effective_interest_rate:$('effectiveRate').value,daily_interest_enabled:$('dailyInterest').checked})});
     $('accountDialog').close();
     await loadDashboard();
-    toast('Счёт создан');
+    toast(editing ? 'Счёт обновлён' : 'Счёт создан');
   } catch (error) { setStatus('accountStatus',friendlyError(error),'error'); }
 });
 
@@ -522,7 +557,7 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=8').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {

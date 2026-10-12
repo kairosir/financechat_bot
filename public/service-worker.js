@@ -1,5 +1,5 @@
-const CACHE = 'purpose-finance-shell-v7';
-const SHELL = ['/', '/styles.css', '/app.js', '/auth-client.js', '/purpose-finance-avatar.png', '/manifest.webmanifest'];
+const CACHE = 'purpose-finance-shell-v8';
+const SHELL = ['/', '/styles.css?v=3', '/app.js?v=3', '/auth-client.js?v=3', '/purpose-finance-avatar.png', '/manifest.webmanifest?v=3'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));

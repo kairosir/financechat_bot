@@ -5,7 +5,8 @@ import hashlib
 import secrets
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,7 @@ class Account:
     interest_rate_bps: int | None = None
     effective_interest_rate_bps: int | None = None
     daily_interest_enabled: bool = False
+    interest_accrual_start_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,10 @@ class Database:
                 connection.execute(
                     "ALTER TABLE accounts ADD COLUMN daily_interest_enabled INTEGER NOT NULL DEFAULT 0"
                 )
+            if "interest_accrual_start_date" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN interest_accrual_start_date TEXT"
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_accounts_user
@@ -204,6 +210,26 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_transactions_account
                 ON transactions(account_id, created_at DESC)
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS deposit_interest_accruals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    accrual_date TEXT NOT NULL,
+                    principal_minor INTEGER NOT NULL,
+                    amount_minor INTEGER NOT NULL,
+                    nominal_rate_bps INTEGER NOT NULL,
+                    days_in_year INTEGER NOT NULL,
+                    transaction_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(account_id, accrual_date)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deposit_interest_user_date ON deposit_interest_accruals(user_id, accrual_date DESC)"
             )
             connection.execute(
                 """
@@ -332,6 +358,7 @@ class Database:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS interest_rate_bps INTEGER",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS effective_interest_rate_bps INTEGER",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS daily_interest_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS interest_accrual_start_date TEXT",
             """
             CREATE TABLE IF NOT EXISTS transactions (
                 id BIGSERIAL PRIMARY KEY,
@@ -347,6 +374,22 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id, created_at DESC)",
             "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'KZT'",
+            """
+            CREATE TABLE IF NOT EXISTS deposit_interest_accruals (
+                id BIGSERIAL PRIMARY KEY,
+                account_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                accrual_date TEXT NOT NULL,
+                principal_minor BIGINT NOT NULL,
+                amount_minor BIGINT NOT NULL,
+                nominal_rate_bps INTEGER NOT NULL,
+                days_in_year INTEGER NOT NULL,
+                transaction_id BIGINT,
+                created_at TEXT NOT NULL,
+                UNIQUE(account_id, accrual_date)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_deposit_interest_user_date ON deposit_interest_accruals(user_id, accrual_date DESC)",
             """
             CREATE TABLE IF NOT EXISTS custom_categories (
                 id BIGSERIAL PRIMARY KEY,
@@ -642,7 +685,8 @@ class Database:
                 """
                 SELECT id, user_id, name, balance_minor, created_at,
                        account_type, currency, interest_rate_bps,
-                       effective_interest_rate_bps, daily_interest_enabled
+                       effective_interest_rate_bps, daily_interest_enabled,
+                       interest_accrual_start_date
                 FROM accounts WHERE user_id = ? ORDER BY id LIMIT 1
                 """,
                 (user_id,),
@@ -669,7 +713,8 @@ class Database:
                 """
                 SELECT id, user_id, name, balance_minor, created_at,
                        account_type, currency, interest_rate_bps,
-                       effective_interest_rate_bps, daily_interest_enabled
+                       effective_interest_rate_bps, daily_interest_enabled,
+                       interest_accrual_start_date
                 FROM accounts WHERE user_id = ? ORDER BY id
                 """,
                 (user_id,),
@@ -685,7 +730,8 @@ class Database:
                 """
                 SELECT id, user_id, name, balance_minor, created_at,
                        account_type, currency, interest_rate_bps,
-                       effective_interest_rate_bps, daily_interest_enabled
+                       effective_interest_rate_bps, daily_interest_enabled,
+                       interest_accrual_start_date
                 FROM accounts WHERE id = ? AND user_id = ?
                 """,
                 (account_id, user_id),
@@ -715,6 +761,11 @@ class Database:
             interest_rate_bps,
             effective_interest_rate_bps,
             daily_interest_enabled,
+            (
+                created_at.date().isoformat()
+                if account_type == "deposit" and daily_interest_enabled
+                else None
+            ),
         )
 
     def _add_account_sync(
@@ -728,6 +779,7 @@ class Database:
         interest_rate_bps: int | None,
         effective_interest_rate_bps: int | None,
         daily_interest_enabled: bool,
+        interest_accrual_start_date: str | None,
     ) -> Account | None:
         try:
             with self._connect() as connection:
@@ -735,13 +787,15 @@ class Database:
                     """
                     INSERT INTO accounts
                         (user_id, name, balance_minor, created_at, account_type, currency,
-                         interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled,
+                         interest_accrual_start_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """ + (" RETURNING id" if self.postgres else "") + """
                     """,
                     (
                         user_id, name, balance_minor, created_at, account_type, currency,
                         interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled,
+                        interest_accrual_start_date,
                     ),
                 )
                 account_id = self._inserted_id(cursor)
@@ -758,6 +812,7 @@ class Database:
             interest_rate_bps,
             effective_interest_rate_bps,
             daily_interest_enabled,
+            interest_accrual_start_date,
         )
 
     async def set_account_balance(
@@ -820,6 +875,245 @@ class Database:
                 return cursor.rowcount == 1
         except (sqlite3.IntegrityError, PostgresIntegrityError):
             return False
+
+    async def update_account(
+        self,
+        account_id: int,
+        user_id: int,
+        name: str,
+        balance_minor: int,
+        account_type: str,
+        interest_rate_bps: int | None,
+        effective_interest_rate_bps: int | None,
+        daily_interest_enabled: bool,
+        updated_at: datetime,
+    ) -> Account | None:
+        return await asyncio.to_thread(
+            self._update_account_sync,
+            account_id,
+            user_id,
+            name,
+            balance_minor,
+            account_type,
+            interest_rate_bps,
+            effective_interest_rate_bps,
+            daily_interest_enabled,
+            updated_at.date().isoformat(),
+        )
+
+    def _update_account_sync(
+        self,
+        account_id: int,
+        user_id: int,
+        name: str,
+        balance_minor: int,
+        account_type: str,
+        interest_rate_bps: int | None,
+        effective_interest_rate_bps: int | None,
+        daily_interest_enabled: bool,
+        updated_on: str,
+    ) -> Account | None:
+        if account_type != "deposit":
+            interest_rate_bps = None
+            effective_interest_rate_bps = None
+            daily_interest_enabled = False
+        try:
+            with self._connect() as connection:
+                current = connection.execute(
+                    """
+                    SELECT interest_accrual_start_date, account_type, daily_interest_enabled
+                    FROM accounts WHERE id = ? AND user_id = ?
+                    """,
+                    (account_id, user_id),
+                ).fetchone()
+                if current is None:
+                    return None
+                start_date = None
+                if account_type == "deposit" and daily_interest_enabled:
+                    start_date = (
+                        current["interest_accrual_start_date"]
+                        if current["account_type"] == "deposit"
+                        and bool(current["daily_interest_enabled"])
+                        and current["interest_accrual_start_date"]
+                        else updated_on
+                    )
+                cursor = connection.execute(
+                    """
+                    UPDATE accounts
+                    SET name = ?, balance_minor = ?, account_type = ?,
+                        interest_rate_bps = ?, effective_interest_rate_bps = ?,
+                        daily_interest_enabled = ?, interest_accrual_start_date = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        name,
+                        balance_minor,
+                        account_type,
+                        interest_rate_bps,
+                        effective_interest_rate_bps,
+                        daily_interest_enabled,
+                        start_date,
+                        account_id,
+                        user_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return None
+        except (sqlite3.IntegrityError, PostgresIntegrityError):
+            return None
+        return self._get_account_sync(account_id, user_id)
+
+    async def accrue_deposit_interest(
+        self,
+        user_id: int,
+        as_of: datetime,
+    ) -> dict[int, int]:
+        return await asyncio.to_thread(
+            self._accrue_deposit_interest_sync,
+            user_id,
+            as_of,
+        )
+
+    def _accrue_deposit_interest_sync(
+        self,
+        user_id: int,
+        as_of: datetime,
+    ) -> dict[int, int]:
+        today = as_of.date()
+        credited: dict[int, int] = {}
+        with self._connect() as connection:
+            lock = " FOR UPDATE" if self.postgres else ""
+            rows = connection.execute(
+                """
+                SELECT id, balance_minor, currency, interest_rate_bps,
+                       interest_accrual_start_date
+                FROM accounts
+                WHERE user_id = ? AND account_type = 'deposit'
+                  AND daily_interest_enabled = """
+                + ("TRUE" if self.postgres else "1")
+                + " AND interest_rate_bps IS NOT NULL"
+                + lock,
+                (user_id,),
+            ).fetchall()
+            for row in rows:
+                account_id = int(row["id"])
+                start_value = row["interest_accrual_start_date"]
+                if not start_value:
+                    connection.execute(
+                        "UPDATE accounts SET interest_accrual_start_date = ? WHERE id = ?",
+                        (today.isoformat(), account_id),
+                    )
+                    continue
+                start_date = date.fromisoformat(str(start_value))
+                latest = connection.execute(
+                    "SELECT MAX(accrual_date) AS value FROM deposit_interest_accruals WHERE account_id = ?",
+                    (account_id,),
+                ).fetchone()
+                last_date = date.fromisoformat(str(latest["value"])) if latest and latest["value"] else start_date
+                current_date = last_date + timedelta(days=1)
+                balance_minor = int(row["balance_minor"])
+                nominal_rate_bps = int(row["interest_rate_bps"])
+                while current_date <= today:
+                    days_in_year = (date(current_date.year + 1, 1, 1) - date(current_date.year, 1, 1)).days
+                    amount_minor = int(
+                        (
+                            Decimal(balance_minor)
+                            * Decimal(nominal_rate_bps)
+                            / Decimal(10000)
+                            / Decimal(days_in_year)
+                        ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                    )
+                    transaction_id = None
+                    if amount_minor > 0:
+                        balance_minor += amount_minor
+                        cursor = connection.execute(
+                            """
+                            INSERT INTO transactions
+                                (user_id, kind, category, amount_minor, note, created_at, account_id, currency)
+                            VALUES (?, 'income', 'deposit_interest', ?, ?, ?, ?, ?)
+                            """ + (" RETURNING id" if self.postgres else ""),
+                            (
+                                user_id,
+                                amount_minor,
+                                f"Автоначисление за {current_date:%d.%m.%Y} · номинальная {Decimal(nominal_rate_bps) / 100:g}% / {days_in_year}",
+                                as_of.replace(
+                                    year=current_date.year,
+                                    month=current_date.month,
+                                    day=current_date.day,
+                                    hour=0,
+                                    minute=1,
+                                    second=0,
+                                    microsecond=0,
+                                ).isoformat(timespec="seconds"),
+                                account_id,
+                                str(row["currency"]),
+                            ),
+                        )
+                        transaction_id = self._inserted_id(cursor)
+                        connection.execute(
+                            "UPDATE accounts SET balance_minor = ? WHERE id = ?",
+                            (balance_minor, account_id),
+                        )
+                        credited[account_id] = credited.get(account_id, 0) + amount_minor
+                    connection.execute(
+                        """
+                        INSERT INTO deposit_interest_accruals
+                            (account_id, user_id, accrual_date, principal_minor, amount_minor,
+                             nominal_rate_bps, days_in_year, transaction_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            account_id,
+                            user_id,
+                            current_date.isoformat(),
+                            balance_minor - amount_minor,
+                            amount_minor,
+                            nominal_rate_bps,
+                            days_in_year,
+                            transaction_id,
+                            as_of.isoformat(timespec="seconds"),
+                        ),
+                    )
+                    current_date += timedelta(days=1)
+        return credited
+
+    async def deposit_interest_summaries(
+        self,
+        user_id: int,
+        today: date,
+    ) -> dict[int, dict[str, object]]:
+        return await asyncio.to_thread(
+            self._deposit_interest_summaries_sync,
+            user_id,
+            today.isoformat(),
+        )
+
+    def _deposit_interest_summaries_sync(
+        self,
+        user_id: int,
+        today: str,
+    ) -> dict[int, dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT account_id,
+                       COALESCE(SUM(amount_minor), 0) AS total_minor,
+                       COALESCE(SUM(CASE WHEN accrual_date = ? THEN amount_minor ELSE 0 END), 0) AS today_minor,
+                       MAX(accrual_date) AS last_accrual_date
+                FROM deposit_interest_accruals
+                WHERE user_id = ?
+                GROUP BY account_id
+                """,
+                (today, user_id),
+            ).fetchall()
+        return {
+            int(row["account_id"]): {
+                "total_minor": int(row["total_minor"]),
+                "today_minor": int(row["today_minor"]),
+                "last_accrual_date": row["last_accrual_date"],
+            }
+            for row in rows
+        }
 
     async def transfer(
         self,
@@ -1014,12 +1308,14 @@ class Database:
         with self._connect() as connection:
             item = connection.execute(
                 """
-                SELECT kind, amount_minor, account_id FROM transactions
+                SELECT kind, category, amount_minor, account_id FROM transactions
                 WHERE id = ? AND user_id = ?
                 """,
                 (transaction_id, user_id),
             ).fetchone()
             if item is None:
+                return False
+            if item["category"] == "deposit_interest":
                 return False
             cursor = connection.execute(
                 "DELETE FROM transactions WHERE id = ? AND user_id = ?",

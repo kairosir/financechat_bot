@@ -348,6 +348,78 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "одной валюте"):
             await self.database.transfer(42, deposit.id, card.id, 100, None, now)
 
+    async def test_edit_account_and_daily_deposit_interest(self) -> None:
+        timezone = ZoneInfo("Asia/Almaty")
+        opened_at = datetime(2026, 10, 6, 12, 0, tzinfo=timezone)
+        card = await self.database.add_account(
+            42,
+            "Накопления",
+            1_000_000,
+            opened_at,
+            account_type="card",
+            currency="KZT",
+        )
+        assert card is not None
+        deposit = await self.database.update_account(
+            card.id,
+            42,
+            "Депозит",
+            1_000_000,
+            "deposit",
+            3650,
+            4400,
+            True,
+            opened_at,
+        )
+        assert deposit is not None
+        self.assertEqual(deposit.account_type, "deposit")
+        self.assertEqual(deposit.interest_accrual_start_date, "2026-10-06")
+
+        credited = await self.database.accrue_deposit_interest(
+            42,
+            datetime(2026, 10, 8, 9, 0, tzinfo=timezone),
+        )
+        self.assertEqual(credited[card.id], 2001)
+        updated = await self.database.get_account(card.id, 42)
+        assert updated is not None
+        self.assertEqual(updated.balance_minor, 1_002_001)
+        interest_items = [
+            item
+            for item in await self.database.recent(42)
+            if item.category == "deposit_interest"
+        ]
+        self.assertEqual([item.amount_minor for item in interest_items], [1001, 1000])
+
+        self.assertEqual(
+            await self.database.accrue_deposit_interest(
+                42,
+                datetime(2026, 10, 8, 18, 0, tzinfo=timezone),
+            ),
+            {},
+        )
+        summaries = await self.database.deposit_interest_summaries(
+            42,
+            datetime(2026, 10, 8, tzinfo=timezone).date(),
+        )
+        self.assertEqual(summaries[card.id]["today_minor"], 1001)
+        self.assertEqual(summaries[card.id]["total_minor"], 2001)
+
+        reverted = await self.database.update_account(
+            card.id,
+            42,
+            "Обычная карта",
+            updated.balance_minor,
+            "card",
+            None,
+            None,
+            False,
+            datetime(2026, 10, 8, 18, 0, tzinfo=timezone),
+        )
+        assert reverted is not None
+        self.assertEqual(reverted.account_type, "card")
+        self.assertIsNone(reverted.interest_rate_bps)
+        self.assertFalse(reverted.daily_interest_enabled)
+
     async def test_profiles_auth_binding_and_admin_overview(self) -> None:
         now = datetime(2026, 10, 8, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
         await self.database.upsert_user_profile(42, "Владелец", "owner", now)

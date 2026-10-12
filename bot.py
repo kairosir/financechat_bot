@@ -775,6 +775,7 @@ def period_start(period: str) -> tuple[datetime | None, str]:
 
 
 async def build_summary_text(user_id: int, period: str) -> str:
+    await db.accrue_deposit_interest(user_id, datetime.now(timezone))
     start, title = period_start(period)
     totals = await db.totals_by_currency(user_id, start)
     accounts = await db.accounts(user_id)
@@ -1009,8 +1010,11 @@ async def show_accounts_panel(
     user_id: int,
     edit: bool = False,
 ) -> None:
-    await db.ensure_default_account(user_id, datetime.now(timezone))
+    now = datetime.now(timezone)
+    await db.ensure_default_account(user_id, now)
+    await db.accrue_deposit_interest(user_id, now)
     accounts = await db.accounts(user_id)
+    interest_summaries = await db.deposit_interest_summaries(user_id, now.date())
     lines = ["<b>💳 Ваши счета</b>", ""]
     for item in accounts:
         icon = account_icon(item.account_type)
@@ -1021,6 +1025,10 @@ async def show_accounts_panel(
                 rate += f" · эфф. {format_interest_rate(item.effective_interest_rate_bps)}"
             if item.daily_interest_enabled:
                 rate += " · ежедневно"
+                summary = interest_summaries.get(item.id, {})
+                today_minor = int(summary.get("today_minor", 0))
+                if today_minor:
+                    rate += f" · сегодня +{format_money(today_minor, item.currency)}"
         lines.append(
             f"{icon} <b>{html.escape(item.name)}</b> — "
             f"{format_money(item.balance_minor, item.currency)}{rate}"
@@ -1083,7 +1091,41 @@ async def account_add_type(callback: CallbackQuery, state: FSMContext) -> None:
     if account_type not in {"card", "deposit", "cash"}:
         await callback.answer("Неизвестный тип", show_alert=True)
         return
+    data = await state.get_data()
     await state.update_data(account_type=account_type)
+    if data.get("editing_account_id"):
+        await callback.answer()
+        if account_type == "deposit":
+            await state.set_state(ManageAccount.entering_interest)
+            if callback.message:
+                await callback.message.edit_text(
+                    "<b>Номинальная ставка</b>\n\n"
+                    "Это годовая ставка, по которой банк рассчитывает ежедневный процент. "
+                    "Введите значение из приложения банка, например <b>15,5</b>.",
+                    reply_markup=back_cancel_keyboard("accounts:back"),
+                )
+            return
+        if callback.message:
+            updated = await db.update_account(
+                int(data["editing_account_id"]),
+                callback.from_user.id,
+                str(data["editing_account_name"]),
+                int(data["editing_account_balance"]),
+                account_type,
+                None,
+                None,
+                False,
+                datetime.now(timezone),
+            )
+            await state.clear()
+            if updated is None:
+                await callback.message.edit_text("Не удалось изменить тип счёта.")
+                return
+            await callback.message.edit_text(
+                f"✅ Тип счёта изменён на <b>{account_type_label(updated.account_type)}</b>."
+            )
+            await show_accounts_panel(callback.message, callback.from_user.id)
+        return
     await state.set_state(ManageAccount.choosing_currency)
     await callback.answer()
     if callback.message:
@@ -1196,7 +1238,9 @@ async def account_add_effective_interest(message: Message, state: FSMContext) ->
     await state.update_data(effective_interest_rate_bps=rate_bps)
     await state.set_state(ManageAccount.choosing_daily_interest)
     await message.answer(
-        "<b>Начисление процентов</b>\n\nПроценты по депозиту начисляются каждый день?",
+        "<b>Начисление процентов</b>\n\n"
+        "Эффективная ставка показывает реальную доходность за год с капитализацией. "
+        "Начислять рассчитанный по номинальной ставке процент каждый день?",
         reply_markup=deposit_daily_interest_keyboard(),
     )
 
@@ -1210,6 +1254,30 @@ async def account_add_daily_interest(callback: CallbackQuery, state: FSMContext)
     data = await state.get_data()
     await callback.answer()
     if callback.message:
+        if data.get("editing_account_id"):
+            updated = await db.update_account(
+                int(data["editing_account_id"]),
+                callback.from_user.id,
+                str(data["editing_account_name"]),
+                int(data["editing_account_balance"]),
+                "deposit",
+                int(data["interest_rate_bps"]),
+                int(data["effective_interest_rate_bps"]),
+                daily_interest_enabled,
+                datetime.now(timezone),
+            )
+            await state.clear()
+            if updated is None:
+                await callback.message.edit_text("Не удалось изменить параметры депозита.")
+                return
+            await callback.message.edit_text(
+                "✅ Счёт преобразован в депозит.\n\n"
+                f"Номинальная: <b>{format_interest_rate(updated.interest_rate_bps)}</b>\n"
+                f"Эффективная: <b>{format_interest_rate(updated.effective_interest_rate_bps)}</b>\n"
+                f"Ежедневное начисление: <b>{'включено' if updated.daily_interest_enabled else 'выключено'}</b>"
+            )
+            await show_accounts_panel(callback.message, callback.from_user.id)
+            return
         await save_new_account(
             callback.message,
             state,
@@ -1223,6 +1291,7 @@ async def account_add_daily_interest(callback: CallbackQuery, state: FSMContext)
 @router.callback_query(F.data.startswith("account_manage:"))
 async def account_manage(callback: CallbackQuery) -> None:
     account_id = int(callback.data.split(":", maxsplit=1)[1])
+    await db.accrue_deposit_interest(callback.from_user.id, datetime.now(timezone))
     item = await db.get_account(account_id, callback.from_user.id)
     if item is None:
         await callback.answer("Счёт не найден", show_alert=True)
@@ -1232,15 +1301,60 @@ async def account_manage(callback: CallbackQuery) -> None:
         icon = account_icon(item.account_type)
         details = account_type_label(item.account_type)
         if item.account_type == "deposit":
-            details += f" · номинальная {format_interest_rate(item.interest_rate_bps)}"
+            estimated_daily = 0
+            if item.interest_rate_bps is not None and item.balance_minor > 0:
+                estimated_daily = int(
+                    (
+                        Decimal(item.balance_minor)
+                        * Decimal(item.interest_rate_bps)
+                        / Decimal(10000)
+                        / Decimal(365)
+                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                )
+            details += (
+                f"\nНоминальная: <b>{format_interest_rate(item.interest_rate_bps)}</b> — "
+                "по ней считается процент за день"
+            )
             if item.effective_interest_rate_bps is not None:
-                details += f" · эффективная {format_interest_rate(item.effective_interest_rate_bps)}"
-            details += " · проценты ежедневно" if item.daily_interest_enabled else ""
+                details += (
+                    f"\nЭффективная: <b>{format_interest_rate(item.effective_interest_rate_bps)}</b> — "
+                    "доходность за год с капитализацией"
+                )
+            details += (
+                f"\nОриентир на сегодня: <b>+{format_money(estimated_daily, item.currency)}/день</b>"
+                if item.daily_interest_enabled
+                else "\nАвтоначисление: <b>выключено</b>"
+            )
         await callback.message.edit_text(
             f"<b>{icon} {html.escape(item.name)}</b>\n\n"
-            f"{details} · {item.currency}\n"
+            f"{details}\nВалюта: <b>{item.currency}</b>\n"
             f"Текущий остаток: <b>{format_money(item.balance_minor, item.currency)}</b>",
             reply_markup=account_manage_keyboard(item.id),
+        )
+
+
+@router.callback_query(F.data.startswith("account_edit_type:"))
+async def account_edit_type_start(callback: CallbackQuery, state: FSMContext) -> None:
+    account_id = int(callback.data.split(":", maxsplit=1)[1])
+    now = datetime.now(timezone)
+    await db.accrue_deposit_interest(callback.from_user.id, now)
+    item = await db.get_account(account_id, callback.from_user.id)
+    if item is None:
+        await callback.answer("Счёт не найден", show_alert=True)
+        return
+    await state.set_state(ManageAccount.choosing_type)
+    await state.update_data(
+        editing_account_id=item.id,
+        editing_account_name=item.name,
+        editing_account_balance=item.balance_minor,
+        editing_account_currency=item.currency,
+    )
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            f"<b>Изменить тип · {html.escape(item.name)}</b>\n\n"
+            "Выберите новый тип счёта. При выборе депозита бот попросит обе банковские ставки.",
+            reply_markup=account_type_keyboard(),
         )
 
 

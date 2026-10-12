@@ -25,6 +25,7 @@ INCOME_CATEGORIES = {
     "freelance": "💻 Подработка",
     "gift": "🎁 Подарок",
     "investment": "📈 Инвестиции",
+    "deposit_interest": "🏦 Проценты по депозиту",
     "refund": "↩️ Возврат",
     "other": "📦 Другое",
 }
@@ -347,6 +348,12 @@ def account_manage_keyboard(account_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="Установить остаток",
                     callback_data=f"account_balance:{account_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Изменить тип и ставки",
+                    callback_data=f"account_edit_type:{account_id}",
                 )
             ],
             [InlineKeyboardButton(text="‹ Назад", callback_data="accounts:back")],
