@@ -71,6 +71,8 @@ class Account:
     effective_interest_rate_bps: int | None = None
     daily_interest_enabled: bool = False
     interest_accrual_start_date: str | None = None
+    bank_accrued_interest_minor: int = 0
+    deposit_payout_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,14 @@ class Database:
             if "interest_accrual_start_date" not in account_columns:
                 connection.execute(
                     "ALTER TABLE accounts ADD COLUMN interest_accrual_start_date TEXT"
+                )
+            if "bank_accrued_interest_minor" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN bank_accrued_interest_minor INTEGER NOT NULL DEFAULT 0"
+                )
+            if "deposit_payout_date" not in account_columns:
+                connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN deposit_payout_date TEXT"
                 )
             connection.execute(
                 """
@@ -359,6 +369,8 @@ class Database:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS effective_interest_rate_bps INTEGER",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS daily_interest_enabled BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS interest_accrual_start_date TEXT",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS bank_accrued_interest_minor BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS deposit_payout_date TEXT",
             """
             CREATE TABLE IF NOT EXISTS transactions (
                 id BIGSERIAL PRIMARY KEY,
@@ -686,7 +698,8 @@ class Database:
                 SELECT id, user_id, name, balance_minor, created_at,
                        account_type, currency, interest_rate_bps,
                        effective_interest_rate_bps, daily_interest_enabled,
-                       interest_accrual_start_date
+                       interest_accrual_start_date, bank_accrued_interest_minor,
+                       deposit_payout_date
                 FROM accounts WHERE user_id = ? ORDER BY id LIMIT 1
                 """,
                 (user_id,),
@@ -714,7 +727,8 @@ class Database:
                 SELECT id, user_id, name, balance_minor, created_at,
                        account_type, currency, interest_rate_bps,
                        effective_interest_rate_bps, daily_interest_enabled,
-                       interest_accrual_start_date
+                       interest_accrual_start_date, bank_accrued_interest_minor,
+                       deposit_payout_date
                 FROM accounts WHERE user_id = ? ORDER BY id
                 """,
                 (user_id,),
@@ -731,7 +745,8 @@ class Database:
                 SELECT id, user_id, name, balance_minor, created_at,
                        account_type, currency, interest_rate_bps,
                        effective_interest_rate_bps, daily_interest_enabled,
-                       interest_accrual_start_date
+                       interest_accrual_start_date, bank_accrued_interest_minor,
+                       deposit_payout_date
                 FROM accounts WHERE id = ? AND user_id = ?
                 """,
                 (account_id, user_id),
@@ -749,6 +764,8 @@ class Database:
         interest_rate_bps: int | None = None,
         effective_interest_rate_bps: int | None = None,
         daily_interest_enabled: bool = False,
+        bank_accrued_interest_minor: int = 0,
+        deposit_payout_date: str | None = None,
     ) -> Account | None:
         return await asyncio.to_thread(
             self._add_account_sync,
@@ -766,6 +783,8 @@ class Database:
                 if account_type == "deposit" and daily_interest_enabled
                 else None
             ),
+            bank_accrued_interest_minor if account_type == "deposit" else 0,
+            deposit_payout_date if account_type == "deposit" else None,
         )
 
     def _add_account_sync(
@@ -780,6 +799,8 @@ class Database:
         effective_interest_rate_bps: int | None,
         daily_interest_enabled: bool,
         interest_accrual_start_date: str | None,
+        bank_accrued_interest_minor: int,
+        deposit_payout_date: str | None,
     ) -> Account | None:
         try:
             with self._connect() as connection:
@@ -788,14 +809,16 @@ class Database:
                     INSERT INTO accounts
                         (user_id, name, balance_minor, created_at, account_type, currency,
                          interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled,
-                         interest_accrual_start_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         interest_accrual_start_date, bank_accrued_interest_minor,
+                         deposit_payout_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """ + (" RETURNING id" if self.postgres else "") + """
                     """,
                     (
                         user_id, name, balance_minor, created_at, account_type, currency,
                         interest_rate_bps, effective_interest_rate_bps, daily_interest_enabled,
-                        interest_accrual_start_date,
+                        interest_accrual_start_date, bank_accrued_interest_minor,
+                        deposit_payout_date,
                     ),
                 )
                 account_id = self._inserted_id(cursor)
@@ -813,6 +836,8 @@ class Database:
             effective_interest_rate_bps,
             daily_interest_enabled,
             interest_accrual_start_date,
+            bank_accrued_interest_minor,
+            deposit_payout_date,
         )
 
     async def set_account_balance(
@@ -887,6 +912,8 @@ class Database:
         effective_interest_rate_bps: int | None,
         daily_interest_enabled: bool,
         updated_at: datetime,
+        bank_accrued_interest_minor: int = 0,
+        deposit_payout_date: str | None = None,
     ) -> Account | None:
         return await asyncio.to_thread(
             self._update_account_sync,
@@ -899,6 +926,8 @@ class Database:
             effective_interest_rate_bps,
             daily_interest_enabled,
             updated_at.date().isoformat(),
+            bank_accrued_interest_minor,
+            deposit_payout_date,
         )
 
     def _update_account_sync(
@@ -912,11 +941,15 @@ class Database:
         effective_interest_rate_bps: int | None,
         daily_interest_enabled: bool,
         updated_on: str,
+        bank_accrued_interest_minor: int,
+        deposit_payout_date: str | None,
     ) -> Account | None:
         if account_type != "deposit":
             interest_rate_bps = None
             effective_interest_rate_bps = None
             daily_interest_enabled = False
+            bank_accrued_interest_minor = 0
+            deposit_payout_date = None
         try:
             with self._connect() as connection:
                 current = connection.execute(
@@ -942,7 +975,8 @@ class Database:
                     UPDATE accounts
                     SET name = ?, balance_minor = ?, account_type = ?,
                         interest_rate_bps = ?, effective_interest_rate_bps = ?,
-                        daily_interest_enabled = ?, interest_accrual_start_date = ?
+                        daily_interest_enabled = ?, interest_accrual_start_date = ?,
+                        bank_accrued_interest_minor = ?, deposit_payout_date = ?
                     WHERE id = ? AND user_id = ?
                     """,
                     (
@@ -953,6 +987,8 @@ class Database:
                         effective_interest_rate_bps,
                         daily_interest_enabled,
                         start_date,
+                        bank_accrued_interest_minor,
+                        deposit_payout_date,
                         account_id,
                         user_id,
                     ),
@@ -986,7 +1022,7 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT id, balance_minor, currency, interest_rate_bps,
-                       interest_accrual_start_date
+                       interest_accrual_start_date, deposit_payout_date
                 FROM accounts
                 WHERE user_id = ? AND account_type = 'deposit'
                   AND daily_interest_enabled = """
@@ -997,6 +1033,12 @@ class Database:
             ).fetchall()
             for row in rows:
                 account_id = int(row["id"])
+                payout_date = (
+                    date.fromisoformat(str(row["deposit_payout_date"]))
+                    if row["deposit_payout_date"]
+                    else None
+                )
+                accrual_through = min(today, payout_date) if payout_date else today
                 start_value = row["interest_accrual_start_date"]
                 if not start_value:
                     connection.execute(
@@ -1013,7 +1055,7 @@ class Database:
                 current_date = last_date + timedelta(days=1)
                 balance_minor = int(row["balance_minor"])
                 nominal_rate_bps = int(row["interest_rate_bps"])
-                while current_date <= today:
+                while current_date <= accrual_through:
                     days_in_year = (date(current_date.year + 1, 1, 1) - date(current_date.year, 1, 1)).days
                     amount_minor = int(
                         (

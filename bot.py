@@ -4,7 +4,7 @@ import asyncio
 import html
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -80,6 +80,8 @@ class ManageAccount(StatesGroup):
     entering_interest = State()
     entering_effective_interest = State()
     choosing_daily_interest = State()
+    entering_bank_accrued_interest = State()
+    entering_payout_date = State()
     renaming = State()
     editing_balance = State()
     choosing_transfer_from = State()
@@ -131,6 +133,50 @@ def format_interest_rate(rate_bps: int | None) -> str:
         return ""
     value = Decimal(rate_bps) / 100
     return f"{value.normalize()}% годовых"
+
+
+def parse_deposit_payout_date(value: str) -> str | None:
+    cleaned = value.strip().lower()
+    if cleaned in {"нет", "не указывать", "-", "—"}:
+        return None
+    for pattern in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned, pattern).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError("invalid payout date")
+
+
+def deposit_projection(item: object, as_of: date) -> tuple[int, int, int | None]:
+    payout_value = getattr(item, "deposit_payout_date", None)
+    nominal = getattr(item, "interest_rate_bps", None)
+    balance_minor = int(getattr(item, "balance_minor"))
+    if not payout_value or nominal is None:
+        return 0, balance_minor, None
+    payout_date = date.fromisoformat(str(payout_value))
+    remaining_days = max((payout_date - as_of).days, 0)
+    projected_balance = balance_minor
+    future_interest = 0
+    current_date = as_of + timedelta(days=1)
+    while current_date <= payout_date:
+        days_in_year = (date(current_date.year + 1, 1, 1) - date(current_date.year, 1, 1)).days
+        principal = projected_balance if bool(getattr(item, "daily_interest_enabled")) else balance_minor
+        amount = int(
+            (
+                Decimal(principal)
+                * Decimal(nominal)
+                / Decimal(10000)
+                / Decimal(days_in_year)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+        future_interest += max(amount, 0)
+        if bool(getattr(item, "daily_interest_enabled")):
+            projected_balance += max(amount, 0)
+        current_date += timedelta(days=1)
+    if not bool(getattr(item, "daily_interest_enabled")):
+        projected_balance += future_interest
+    projected_balance += int(getattr(item, "bank_accrued_interest_minor", 0))
+    return future_interest, projected_balance, remaining_days
 
 
 def format_money(amount_minor: int, currency: str = "KZT") -> str:
@@ -1029,6 +1075,8 @@ async def show_accounts_panel(
                 today_minor = int(summary.get("today_minor", 0))
                 if today_minor:
                     rate += f" · сегодня +{format_money(today_minor, item.currency)}"
+            if item.deposit_payout_date:
+                rate += f" · выплата {date.fromisoformat(item.deposit_payout_date):%d.%m.%Y}"
         lines.append(
             f"{icon} <b>{html.escape(item.name)}</b> — "
             f"{format_money(item.balance_minor, item.currency)}{rate}"
@@ -1190,6 +1238,8 @@ async def save_new_account(
     interest_rate_bps: int | None,
     effective_interest_rate_bps: int | None = None,
     daily_interest_enabled: bool = False,
+    bank_accrued_interest_minor: int = 0,
+    deposit_payout_date: str | None = None,
 ) -> None:
     data = await state.get_data()
     item = await db.add_account(
@@ -1202,6 +1252,8 @@ async def save_new_account(
         interest_rate_bps=interest_rate_bps,
         effective_interest_rate_bps=effective_interest_rate_bps,
         daily_interest_enabled=daily_interest_enabled,
+        bank_accrued_interest_minor=bank_accrued_interest_minor,
+        deposit_payout_date=deposit_payout_date,
     )
     if item is None:
         await state.set_state(ManageAccount.entering_name)
@@ -1251,41 +1303,80 @@ async def account_add_effective_interest(message: Message, state: FSMContext) ->
 )
 async def account_add_daily_interest(callback: CallbackQuery, state: FSMContext) -> None:
     daily_interest_enabled = callback.data.endswith(":yes")
-    data = await state.get_data()
+    await state.update_data(daily_interest_enabled=daily_interest_enabled)
+    await state.set_state(ManageAccount.entering_bank_accrued_interest)
     await callback.answer()
     if callback.message:
-        if data.get("editing_account_id"):
-            updated = await db.update_account(
-                int(data["editing_account_id"]),
-                callback.from_user.id,
-                str(data["editing_account_name"]),
-                int(data["editing_account_balance"]),
-                "deposit",
-                int(data["interest_rate_bps"]),
-                int(data["effective_interest_rate_bps"]),
-                daily_interest_enabled,
-                datetime.now(timezone),
-            )
-            await state.clear()
-            if updated is None:
-                await callback.message.edit_text("Не удалось изменить параметры депозита.")
-                return
-            await callback.message.edit_text(
-                "✅ Счёт преобразован в депозит.\n\n"
-                f"Номинальная: <b>{format_interest_rate(updated.interest_rate_bps)}</b>\n"
-                f"Эффективная: <b>{format_interest_rate(updated.effective_interest_rate_bps)}</b>\n"
-                f"Ежедневное начисление: <b>{'включено' if updated.daily_interest_enabled else 'выключено'}</b>"
-            )
-            await show_accounts_panel(callback.message, callback.from_user.id)
-            return
-        await save_new_account(
-            callback.message,
-            state,
-            int(data["account_balance"]),
+        await callback.message.edit_text(
+            "<b>Уже начислено банком</b>\n\n"
+            "Введите сумму процентов, которую банк уже показывает, но ещё не добавил к остатку. "
+            "Если таких процентов нет — отправьте <b>0</b>.",
+            reply_markup=back_cancel_keyboard("accounts:back"),
+        )
+
+
+@router.message(ManageAccount.entering_bank_accrued_interest)
+async def account_add_bank_interest(message: Message, state: FSMContext) -> None:
+    amount_minor = parse_balance(message.text or "")
+    if amount_minor is None or amount_minor < 0:
+        await message.answer("Введите сумму от 0, например 1250,50.")
+        return
+    await state.update_data(bank_accrued_interest_minor=amount_minor)
+    await state.set_state(ManageAccount.entering_payout_date)
+    await message.answer(
+        "<b>Дата выплаты депозита</b>\n\n"
+        "Введите дату в формате <b>31.12.2026</b>. Если точной даты нет — отправьте <b>нет</b>.",
+        reply_markup=back_cancel_keyboard("accounts:back"),
+    )
+
+
+@router.message(ManageAccount.entering_payout_date)
+async def account_add_payout_date(message: Message, state: FSMContext) -> None:
+    try:
+        payout_date = parse_deposit_payout_date(message.text or "")
+    except ValueError:
+        await message.answer("Введите дату в формате 31.12.2026 или отправьте «нет».")
+        return
+    data = await state.get_data()
+    if data.get("editing_account_id"):
+        updated = await db.update_account(
+            int(data["editing_account_id"]),
+            message.chat.id,
+            str(data["editing_account_name"]),
+            int(data["editing_account_balance"]),
+            "deposit",
             int(data["interest_rate_bps"]),
             int(data["effective_interest_rate_bps"]),
-            daily_interest_enabled,
+            bool(data["daily_interest_enabled"]),
+            datetime.now(timezone),
+            int(data["bank_accrued_interest_minor"]),
+            payout_date,
         )
+        await state.clear()
+        if updated is None:
+            await message.answer("Не удалось изменить параметры депозита.")
+            return
+        await message.answer(
+            "✅ Параметры депозита обновлены.\n\n"
+            f"Номинальная: <b>{format_interest_rate(updated.interest_rate_bps)}</b>\n"
+            f"Эффективная: <b>{format_interest_rate(updated.effective_interest_rate_bps)}</b>\n"
+            f"Начислено банком: <b>{format_money(updated.bank_accrued_interest_minor, updated.currency)}</b>\n"
+            f"Дата выплаты: <b>{date.fromisoformat(updated.deposit_payout_date):%d.%m.%Y}</b>"
+            if updated.deposit_payout_date
+            else "✅ Параметры депозита обновлены. Дата выплаты не указана."
+        )
+        await show_accounts_panel(message, message.chat.id)
+        return
+    await save_new_account(
+        message,
+        state,
+        int(data["account_balance"]),
+        int(data["interest_rate_bps"]),
+        int(data["effective_interest_rate_bps"]),
+        bool(data["daily_interest_enabled"]),
+        int(data["bank_accrued_interest_minor"]),
+        payout_date,
+    )
 
 
 @router.callback_query(F.data.startswith("account_manage:"))
@@ -1325,6 +1416,20 @@ async def account_manage(callback: CallbackQuery) -> None:
                 if item.daily_interest_enabled
                 else "\nАвтоначисление: <b>выключено</b>"
             )
+            details += (
+                f"\nУже начислено банком: <b>{format_money(item.bank_accrued_interest_minor, item.currency)}</b>"
+            )
+            future_interest, projected_payout, remaining_days = deposit_projection(
+                item,
+                datetime.now(timezone).date(),
+            )
+            if item.deposit_payout_date:
+                details += (
+                    f"\nДата выплаты: <b>{date.fromisoformat(item.deposit_payout_date):%d.%m.%Y}</b>"
+                    f" · осталось {remaining_days} дн."
+                    f"\nПрогноз к выплате: <b>{format_money(projected_payout, item.currency)}</b>"
+                    f" (ещё +{format_money(future_interest, item.currency)})"
+                )
         await callback.message.edit_text(
             f"<b>{icon} {html.escape(item.name)}</b>\n\n"
             f"{details}\nВалюта: <b>{item.currency}</b>\n"
@@ -1361,6 +1466,7 @@ async def account_edit_type_start(callback: CallbackQuery, state: FSMContext) ->
 @router.callback_query(F.data.startswith("account_balance:"))
 async def account_balance_start(callback: CallbackQuery, state: FSMContext) -> None:
     account_id = int(callback.data.split(":", maxsplit=1)[1])
+    await db.accrue_deposit_interest(callback.from_user.id, datetime.now(timezone))
     item = await db.get_account(account_id, callback.from_user.id)
     if item is None:
         await callback.answer("Счёт не найден", show_alert=True)

@@ -1,4 +1,4 @@
-const CACHE = 'purpose-finance-shell-v8';
+const CACHE = 'purpose-finance-shell-v9';
 const SHELL = ['/', '/styles.css?v=3', '/app.js?v=3', '/auth-client.js?v=3', '/purpose-finance-avatar.png', '/manifest.webmanifest?v=3'];
 
 self.addEventListener('install', event => {

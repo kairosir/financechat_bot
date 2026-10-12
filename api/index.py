@@ -6,7 +6,7 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
@@ -319,6 +319,51 @@ def calculated_effective_rate(nominal_rate_bps: int | None) -> str | None:
     return f"{effective.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):g}%"
 
 
+def parse_optional_date(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Укажите корректную дату выплаты") from error
+
+
+def deposit_projection(
+    item: object,
+    as_of: date,
+) -> tuple[int, int, int | None]:
+    payout_value = getattr(item, "deposit_payout_date", None)
+    nominal = getattr(item, "interest_rate_bps", None)
+    balance_minor = int(getattr(item, "balance_minor"))
+    if not payout_value or nominal is None:
+        return 0, balance_minor, None
+    payout_date = date.fromisoformat(str(payout_value))
+    remaining_days = max((payout_date - as_of).days, 0)
+    projected_balance = balance_minor
+    future_interest = 0
+    current_date = as_of + timedelta(days=1)
+    while current_date <= payout_date:
+        days_in_year = (date(current_date.year + 1, 1, 1) - date(current_date.year, 1, 1)).days
+        principal = projected_balance if bool(getattr(item, "daily_interest_enabled")) else balance_minor
+        amount = int(
+            (
+                Decimal(principal)
+                * Decimal(nominal)
+                / Decimal(10000)
+                / Decimal(days_in_year)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+        future_interest += max(amount, 0)
+        if bool(getattr(item, "daily_interest_enabled")):
+            projected_balance += max(amount, 0)
+        current_date += timedelta(days=1)
+    if not bool(getattr(item, "daily_interest_enabled")):
+        projected_balance += future_interest
+    projected_balance += int(getattr(item, "bank_accrued_interest_minor", 0))
+    return future_interest, projected_balance, remaining_days
+
+
 def account_payload(
     item: object,
     interest_summary: dict[str, object] | None = None,
@@ -340,6 +385,12 @@ def account_payload(
         if nominal is not None and balance_minor > 0
         else 0
     )
+    bank_accrued = int(getattr(item, "bank_accrued_interest_minor", 0))
+    auto_accrued = int(summary.get("total_minor", 0))
+    future_interest, projected_payout, remaining_days = deposit_projection(
+        item,
+        datetime.now(TIMEZONE).date(),
+    )
     return {
         "id": getattr(item, "id"),
         "name": getattr(item, "name"),
@@ -357,6 +408,18 @@ def account_payload(
         "estimated_daily_interest": money(estimated_daily, currency),
         "interest_accrued_today": money(int(summary.get("today_minor", 0)), currency),
         "interest_accrued_total": money(int(summary.get("total_minor", 0)), currency),
+        "bank_accrued_interest": money(bank_accrued, currency),
+        "bank_accrued_interest_minor": bank_accrued,
+        "total_tracked_interest": money(bank_accrued + auto_accrued, currency),
+        "deposit_payout_date": getattr(item, "deposit_payout_date", None),
+        "deposit_payout_date_formatted": (
+            date.fromisoformat(str(getattr(item, "deposit_payout_date"))).strftime("%d.%m.%Y")
+            if getattr(item, "deposit_payout_date", None)
+            else None
+        ),
+        "days_until_payout": remaining_days,
+        "projected_future_interest": money(future_interest, currency),
+        "projected_payout_amount": money(projected_payout, currency),
         "last_interest_date": summary.get("last_accrual_date"),
     }
 
@@ -843,6 +906,8 @@ async def create_account(request: Request) -> dict[str, object]:
     interest_rate_bps: int | None = None
     effective_interest_rate_bps: int | None = None
     daily_interest_enabled = False
+    bank_accrued_interest_minor = 0
+    deposit_payout_date: str | None = None
     if account_type == "deposit":
         interest_rate_bps = parse_interest_rate(
             payload.get("nominal_interest_rate", payload.get("interest_rate", ""))
@@ -855,6 +920,13 @@ async def create_account(request: Request) -> dict[str, object]:
         if effective_interest_rate_bps is None:
             raise HTTPException(status_code=400, detail="Эффективная ставка должна быть от 0 до 100%")
         daily_interest_enabled = bool(payload.get("daily_interest_enabled", False))
+        bank_accrued_interest_minor = parse_amount(
+            payload.get("bank_accrued_interest", "0") or "0",
+            allow_negative=True,
+        )
+        if bank_accrued_interest_minor is None or bank_accrued_interest_minor < 0:
+            raise HTTPException(status_code=400, detail="Начисленные проценты не могут быть отрицательными")
+        deposit_payout_date = parse_optional_date(payload.get("deposit_payout_date"))
     item = await db.add_account(
         user_id,
         name,
@@ -865,28 +937,12 @@ async def create_account(request: Request) -> dict[str, object]:
         interest_rate_bps=interest_rate_bps,
         effective_interest_rate_bps=effective_interest_rate_bps,
         daily_interest_enabled=daily_interest_enabled,
+        bank_accrued_interest_minor=bank_accrued_interest_minor,
+        deposit_payout_date=deposit_payout_date,
     )
     if item is None:
         raise HTTPException(status_code=409, detail="Такой счёт уже существует")
-    return {
-        "ok": True,
-        "id": item.id,
-        "name": item.name,
-        "balance": money(item.balance_minor, item.currency),
-        "currency": item.currency,
-        "account_type": item.account_type,
-        "nominal_interest_rate": (
-            f"{Decimal(item.interest_rate_bps) / 100:g}%"
-            if item.interest_rate_bps is not None
-            else None
-        ),
-        "effective_interest_rate": (
-            f"{Decimal(item.effective_interest_rate_bps) / 100:g}%"
-            if item.effective_interest_rate_bps is not None
-            else None
-        ),
-        "daily_interest_enabled": item.daily_interest_enabled,
-    }
+    return {"ok": True, **account_payload(item)}
 
 
 @app.patch("/api/accounts/{account_id}")
@@ -915,6 +971,8 @@ async def edit_account(account_id: int, request: Request) -> dict[str, object]:
     nominal_rate: int | None = None
     effective_rate: int | None = None
     daily_enabled = False
+    bank_accrued_interest_minor = 0
+    deposit_payout_date: str | None = None
     if account_type == "deposit":
         nominal_rate = parse_interest_rate(
             payload.get("nominal_interest_rate", payload.get("interest_rate", ""))
@@ -925,6 +983,18 @@ async def edit_account(account_id: int, request: Request) -> dict[str, object]:
         if effective_rate is None:
             raise HTTPException(status_code=400, detail="Эффективная ставка должна быть от 0 до 100%")
         daily_enabled = bool(payload.get("daily_interest_enabled", False))
+        bank_accrued_interest_minor = parse_amount(
+            payload.get(
+                "bank_accrued_interest",
+                Decimal(current.bank_accrued_interest_minor) / 100,
+            ) or "0",
+            allow_negative=True,
+        )
+        if bank_accrued_interest_minor is None or bank_accrued_interest_minor < 0:
+            raise HTTPException(status_code=400, detail="Начисленные проценты не могут быть отрицательными")
+        deposit_payout_date = parse_optional_date(
+            payload.get("deposit_payout_date", current.deposit_payout_date)
+        )
     updated = await db.update_account(
         account_id,
         user_id,
@@ -935,6 +1005,8 @@ async def edit_account(account_id: int, request: Request) -> dict[str, object]:
         effective_rate,
         daily_enabled,
         now,
+        bank_accrued_interest_minor,
+        deposit_payout_date,
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Не удалось сохранить: проверьте название счёта")

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from bot import format_money, parse_amount
 from api.index import (
     create_telegram_session,
+    deposit_projection,
     resolve_neon_auth_issuers,
     verify_telegram_login_data,
     verify_telegram_session,
@@ -419,6 +420,41 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reverted.account_type, "card")
         self.assertIsNone(reverted.interest_rate_bps)
         self.assertFalse(reverted.daily_interest_enabled)
+
+    async def test_deposit_bank_interest_payout_and_balance_correction(self) -> None:
+        timezone = ZoneInfo("Asia/Almaty")
+        opened_at = datetime(2026, 10, 6, 12, 0, tzinfo=timezone)
+        deposit = await self.database.add_account(
+            42,
+            "Срочный депозит",
+            1_000_000,
+            opened_at,
+            account_type="deposit",
+            currency="KZT",
+            interest_rate_bps=3650,
+            effective_interest_rate_bps=4400,
+            daily_interest_enabled=True,
+            bank_accrued_interest_minor=12_345,
+            deposit_payout_date="2026-10-08",
+        )
+        assert deposit is not None
+        self.assertEqual(deposit.bank_accrued_interest_minor, 12_345)
+        self.assertEqual(deposit.deposit_payout_date, "2026-10-08")
+        future, payout, days = deposit_projection(deposit, opened_at.date())
+        self.assertEqual((future, payout, days), (2_001, 1_014_346, 2))
+
+        credited = await self.database.accrue_deposit_interest(
+            42,
+            datetime(2026, 10, 12, 9, 0, tzinfo=timezone),
+        )
+        self.assertEqual(credited[deposit.id], 2_001)
+        updated = await self.database.get_account(deposit.id, 42)
+        assert updated is not None
+        self.assertEqual(updated.balance_minor, 1_002_001)
+        self.assertTrue(await self.database.set_account_balance(deposit.id, 42, 1_500_000))
+        corrected = await self.database.get_account(deposit.id, 42)
+        assert corrected is not None
+        self.assertEqual(corrected.balance_minor, 1_500_000)
 
     async def test_profiles_auth_binding_and_admin_overview(self) -> None:
         now = datetime(2026, 10, 8, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))

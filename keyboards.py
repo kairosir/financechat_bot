@@ -346,7 +346,7 @@ def account_manage_keyboard(account_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="Установить остаток",
+                    text="Изменить остаток",
                     callback_data=f"account_balance:{account_id}",
                 )
             ],

@@ -149,7 +149,9 @@ function accountCard(item) {
   let details = `${meta.label} · ${escapeHtml(item.currency)}`;
   if (item.account_type === 'deposit') {
     details = `Ном. ${escapeHtml(item.nominal_interest_rate || item.interest_rate || '—')} · Эфф. ${escapeHtml(item.effective_interest_rate || '—')}`;
-    if (item.daily_interest_enabled) details += ` · ежедневно<br>Сегодня +${escapeHtml(item.interest_accrued_today || '0')} · примерно ${escapeHtml(item.estimated_daily_interest || '0')}/день · расчётная эфф. ${escapeHtml(item.calculated_effective_rate || '—')}`;
+    if (item.daily_interest_enabled) details += ` · ежедневно<br>Сегодня +${escapeHtml(item.interest_accrued_today || '0')} · примерно ${escapeHtml(item.estimated_daily_interest || '0')}/день`;
+    if (item.bank_accrued_interest_minor > 0) details += `<br>Начислено банком: ${escapeHtml(item.bank_accrued_interest)}`;
+    if (item.deposit_payout_date) details += `<br>Выплата ${escapeHtml(item.deposit_payout_date_formatted)} · прогноз ${escapeHtml(item.projected_payout_amount)} (+${escapeHtml(item.projected_future_interest)})`;
   }
   return `<button type="button" class="account-card ${escapeHtml(item.account_type)}" data-edit-account="${item.id}"><div class="account-head"><span>${escapeHtml(item.name)}</span><span class="account-icon">${meta.icon}</span></div><strong>${escapeHtml(item.balance)}</strong><small>${details}</small></button>`;
 }
@@ -370,7 +372,10 @@ function openAccountDialog() {
   $('accountForm').reset();
   accountType = 'card';
   $('accountBalance').value = '0';
+  $('bankAccruedInterest').value = '0';
+  $('depositPayoutDate').value = '';
   $('accountCurrencySymbol').textContent = '₸';
+  $('bankInterestCurrencySymbol').textContent = '₸';
   $('accountCurrency').disabled = false;
   $('accountCurrencyHint').classList.add('hidden');
   $('accountDialog').dataset.mode = 'create';
@@ -402,7 +407,10 @@ function openEditAccount(accountId) {
   $('accountCurrencySymbol').textContent = currencySymbols[item.currency] || item.currency;
   $('nominalRate').value = item.nominal_interest_rate_value ?? '';
   $('effectiveRate').value = item.effective_interest_rate_value ?? '';
+  $('bankAccruedInterest').value = String((Number(item.bank_accrued_interest_minor) || 0) / 100).replace('.', ',');
+  $('depositPayoutDate').value = item.deposit_payout_date || '';
   $('dailyInterest').checked = Boolean(item.daily_interest_enabled);
+  $('bankInterestCurrencySymbol').textContent = currencySymbols[item.currency] || item.currency;
   $('depositFields').classList.toggle('hidden',accountType !== 'deposit');
   document.querySelectorAll('[data-account-type]').forEach(button => button.classList.toggle('active',button.dataset.accountType === accountType));
   setStatus('accountStatus');
@@ -416,14 +424,18 @@ document.querySelectorAll('[data-account-type]').forEach(button => button.addEve
   document.querySelectorAll('[data-account-type]').forEach(item => item.classList.toggle('active',item === button));
   $('depositFields').classList.toggle('hidden',accountType !== 'deposit');
 }));
-$('accountCurrency').addEventListener('change', () => $('accountCurrencySymbol').textContent = currencySymbols[$('accountCurrency').value]);
+$('accountCurrency').addEventListener('change', () => {
+  const symbol = currencySymbols[$('accountCurrency').value] || $('accountCurrency').value;
+  $('accountCurrencySymbol').textContent = symbol;
+  $('bankInterestCurrencySymbol').textContent = symbol;
+});
 $('accountForm').addEventListener('submit', async event => {
   event.preventDefault();
   setStatus('accountStatus','Создаём счёт…');
   try {
     const editing = $('accountDialog').dataset.mode === 'edit';
     const accountId = $('accountDialog').dataset.accountId;
-    await api(editing ? `/api/accounts/${accountId}` : '/api/accounts',{method:editing ? 'PATCH' : 'POST',body:JSON.stringify({name:$('accountName').value,balance:$('accountBalance').value,account_type:accountType,currency:$('accountCurrency').value,nominal_interest_rate:$('nominalRate').value,effective_interest_rate:$('effectiveRate').value,daily_interest_enabled:$('dailyInterest').checked})});
+    await api(editing ? `/api/accounts/${accountId}` : '/api/accounts',{method:editing ? 'PATCH' : 'POST',body:JSON.stringify({name:$('accountName').value,balance:$('accountBalance').value,account_type:accountType,currency:$('accountCurrency').value,nominal_interest_rate:$('nominalRate').value,effective_interest_rate:$('effectiveRate').value,daily_interest_enabled:$('dailyInterest').checked,bank_accrued_interest:$('bankAccruedInterest').value,deposit_payout_date:$('depositPayoutDate').value})});
     $('accountDialog').close();
     await loadDashboard();
     toast(editing ? 'Счёт обновлён' : 'Счёт создан');
@@ -557,7 +569,7 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=8').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=9').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {
