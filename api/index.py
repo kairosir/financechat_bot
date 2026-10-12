@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from calendar import monthrange
 import hashlib
 import hmac
 import json
@@ -59,6 +60,11 @@ ADMIN_IDS = {
     int(value.strip())
     for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
     if value.strip().lstrip("-").isdigit()
+}
+ADMIN_EMAILS = {
+    value.strip().lower()
+    for value in os.getenv("ADMIN_EMAILS", "").split(",")
+    if value.strip()
 }
 TELEGRAM_SESSION_COOKIE = "purpose_finance_telegram"
 TELEGRAM_SESSION_ISSUER = "purpose-finance-telegram"
@@ -210,13 +216,17 @@ async def authorized_user(request: Request) -> int:
         request.headers.get("X-Telegram-Init-Data", "")
     )
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-    auth_subject = None
+    auth_claims: dict[str, object] | None = None
     if scheme.lower() == "bearer" and token.count(".") == 2:
-        auth_subject = await verify_neon_auth_token(token)
+        auth_claims = await verify_neon_auth_claims(token)
     if telegram_user_id is not None:
         return telegram_user_id
-    if auth_subject:
-        return await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
+    if auth_claims:
+        return await db.user_by_auth_subject(
+            str(auth_claims["sub"]),
+            datetime.now(TIMEZONE),
+            str(auth_claims.get("email") or "") or None,
+        )
     telegram_session_user = verify_telegram_session(
         request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
     )
@@ -235,16 +245,21 @@ async def authorized_user(request: Request) -> int:
 
 
 async def neon_auth_subject(request: Request) -> str:
+    claims = await neon_auth_identity(request)
+    return str(claims["sub"])
+
+
+async def neon_auth_identity(request: Request) -> dict[str, object]:
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     if scheme.lower() != "bearer" or token.count(".") != 2:
         raise HTTPException(status_code=401, detail="Войдите по email")
-    subject = await verify_neon_auth_token(token)
-    if not subject:
+    claims = await verify_neon_auth_claims(token)
+    if not claims:
         raise HTTPException(status_code=401, detail="Сессия истекла. Войдите заново")
-    return subject
+    return claims
 
 
-async def verify_neon_auth_token(token: str) -> str | None:
+async def verify_neon_auth_claims(token: str) -> dict[str, object] | None:
     if not _jwks_client or not NEON_AUTH_ISSUERS:
         return None
     try:
@@ -259,18 +274,41 @@ async def verify_neon_auth_token(token: str) -> str | None:
     except (InvalidTokenError, PyJWKClientError, ValueError):
         return None
     subject = str(payload.get("sub", "")).strip()
-    return subject or None
+    if not subject:
+        return None
+    return {
+        "sub": subject,
+        "email": str(payload.get("email", "")).strip().lower(),
+    }
+
+
+async def verify_neon_auth_token(token: str) -> str | None:
+    claims = await verify_neon_auth_claims(token)
+    return str(claims["sub"]) if claims else None
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+def is_admin_email(email: str, allowed: set[str] | None = None) -> bool:
+    configured = ADMIN_EMAILS if allowed is None else allowed
+    return email.strip().lower() in configured
+
+
+async def is_site_admin(request: Request) -> bool:
+    try:
+        claims = await neon_auth_identity(request)
+    except HTTPException:
+        return False
+    return is_admin_email(str(claims.get("email") or ""))
+
+
 async def selected_user(request: Request, owner_id: int | None) -> tuple[int, int]:
     viewer_id = await authorized_user(request)
     if owner_id is None or owner_id == viewer_id:
         return viewer_id, viewer_id
-    if not is_admin(viewer_id):
+    if not await is_site_admin(request):
         raise HTTPException(status_code=403, detail="Нет доступа к данным другого пользователя")
     return viewer_id, owner_id
 
@@ -338,7 +376,7 @@ def deposit_projection(
     balance_minor = int(getattr(item, "balance_minor"))
     if not payout_value or nominal is None:
         return 0, balance_minor, None
-    payout_date = date.fromisoformat(str(payout_value))
+    payout_date = next_monthly_payout(str(payout_value), as_of)
     remaining_days = max((payout_date - as_of).days, 0)
     projected_balance = balance_minor
     future_interest = 0
@@ -362,6 +400,23 @@ def deposit_projection(
         projected_balance += future_interest
     projected_balance += int(getattr(item, "bank_accrued_interest_minor", 0))
     return future_interest, projected_balance, remaining_days
+
+
+def next_monthly_payout(anchor_value: str, as_of: date) -> date:
+    """Return the next recurring monthly payout date, clamped to month end."""
+    payout_day = date.fromisoformat(anchor_value).day
+    candidate = date(
+        as_of.year,
+        as_of.month,
+        min(payout_day, monthrange(as_of.year, as_of.month)[1]),
+    )
+    if candidate >= as_of:
+        return candidate
+    if as_of.month == 12:
+        year, month = as_of.year + 1, 1
+    else:
+        year, month = as_of.year, as_of.month + 1
+    return date(year, month, min(payout_day, monthrange(year, month)[1]))
 
 
 def account_payload(
@@ -391,6 +446,12 @@ def account_payload(
         item,
         datetime.now(TIMEZONE).date(),
     )
+    payout_value = getattr(item, "deposit_payout_date", None)
+    next_payout = (
+        next_monthly_payout(str(payout_value), datetime.now(TIMEZONE).date())
+        if payout_value
+        else None
+    )
     return {
         "id": getattr(item, "id"),
         "name": getattr(item, "name"),
@@ -411,12 +472,15 @@ def account_payload(
         "bank_accrued_interest": money(bank_accrued, currency),
         "bank_accrued_interest_minor": bank_accrued,
         "total_tracked_interest": money(bank_accrued + auto_accrued, currency),
-        "deposit_payout_date": getattr(item, "deposit_payout_date", None),
+        "deposit_payout_date": payout_value,
+        "deposit_payout_day": date.fromisoformat(str(payout_value)).day if payout_value else None,
         "deposit_payout_date_formatted": (
             date.fromisoformat(str(getattr(item, "deposit_payout_date"))).strftime("%d.%m.%Y")
             if getattr(item, "deposit_payout_date", None)
             else None
         ),
+        "next_payout_date": next_payout.isoformat() if next_payout else None,
+        "next_payout_date_formatted": next_payout.strftime("%d.%m.%Y") if next_payout else None,
         "days_until_payout": remaining_days,
         "projected_future_interest": money(future_interest, currency),
         "projected_payout_amount": money(projected_payout, currency),
@@ -523,6 +587,53 @@ async def start_telegram_login() -> dict[str, object]:
     }
 
 
+@app.post("/api/auth/telegram/recovery/start")
+async def start_telegram_recovery(request: Request) -> dict[str, object]:
+    payload = await request.json()
+    email = str(payload.get("email", "")).strip().lower() if isinstance(payload, dict) else ""
+    if not email or "@" not in email or len(email) > 254:
+        raise HTTPException(status_code=400, detail="Укажите корректный email")
+    bot_username = await telegram_bot_username()
+    if not bot_username:
+        raise HTTPException(status_code=503, detail="Telegram-бот временно недоступен")
+    await ensure_initialized()
+    now = datetime.now(TIMEZONE)
+    token = await db.create_telegram_recovery_request(
+        email,
+        now,
+        now + timedelta(minutes=10),
+    )
+    return {
+        "ok": True,
+        "token": token,
+        "expires_in": 600,
+        "telegram_url": f"https://t.me/{bot_username}?start=recover_{token}",
+    }
+
+
+@app.get("/api/auth/telegram/recovery/status")
+async def telegram_recovery_status(
+    request: Request,
+    response: Response,
+    token: str,
+) -> dict[str, object]:
+    await ensure_initialized()
+    status = await db.telegram_recovery_status(token, datetime.now(TIMEZONE))
+    if status is None:
+        raise HTTPException(status_code=404, detail="Запрос восстановления не найден")
+    if status["status"] == "approved" and status.get("user_id"):
+        response.set_cookie(
+            TELEGRAM_SESSION_COOKIE,
+            create_telegram_session(int(status["user_id"])),
+            max_age=TELEGRAM_SESSION_TTL_SECONDS,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+    return {"ok": True, "status": status["status"]}
+
+
 @app.post("/api/auth/telegram/approve")
 async def approve_telegram_login(request: Request, response: Response) -> dict[str, object]:
     user_id = verify_telegram_init_data(
@@ -582,28 +693,38 @@ async def me(request: Request, response: Response) -> dict[str, object]:
     return {
         "ok": True,
         "user_id": user_id,
-        "is_admin": is_admin(user_id),
+        "is_admin": await is_site_admin(request),
         "can_sign_out": can_sign_out,
     }
 
 
 @app.get("/api/profile")
 async def profile(request: Request) -> dict[str, object]:
-    auth_subject = await neon_auth_subject(request)
+    identity = await neon_auth_identity(request)
+    auth_subject = str(identity["sub"])
     await ensure_initialized()
-    await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
+    await db.user_by_auth_subject(
+        auth_subject,
+        datetime.now(TIMEZONE),
+        str(identity.get("email") or "") or None,
+    )
     telegram = await db.telegram_link_for_auth(auth_subject)
     return {"ok": True, "telegram": telegram}
 
 
 @app.post("/api/profile/telegram/link/start")
 async def start_telegram_link(request: Request) -> dict[str, object]:
-    auth_subject = await neon_auth_subject(request)
+    identity = await neon_auth_identity(request)
+    auth_subject = str(identity["sub"])
     bot_username = await telegram_bot_username()
     if not bot_username:
         raise HTTPException(status_code=503, detail="Telegram-бот временно недоступен")
     await ensure_initialized()
-    await db.user_by_auth_subject(auth_subject, datetime.now(TIMEZONE))
+    await db.user_by_auth_subject(
+        auth_subject,
+        datetime.now(TIMEZONE),
+        str(identity.get("email") or "") or None,
+    )
     if await db.telegram_link_for_auth(auth_subject):
         raise HTTPException(status_code=409, detail="Telegram уже привязан")
     now = datetime.now(TIMEZONE)
@@ -642,8 +763,8 @@ async def unlink_telegram(request: Request) -> dict[str, object]:
 
 @app.get("/api/admin/users")
 async def admin_users(request: Request) -> dict[str, object]:
-    user_id = await authorized_user(request)
-    if not is_admin(user_id):
+    await authorized_user(request)
+    if not await is_site_admin(request):
         raise HTTPException(status_code=403, detail="Только для администратора")
     result = []
     for item in await db.users_overview():
@@ -707,6 +828,7 @@ async def dashboard(
     owner_id: Optional[int] = None,
 ) -> dict[str, object]:
     viewer_id, user_id = await selected_user(request, owner_id)
+    viewer_is_admin = await is_site_admin(request)
     now = datetime.now(TIMEZONE)
     start_at, end_at, period_label = period_bounds(period, start, end)
     await db.ensure_default_account(user_id, now)
@@ -725,7 +847,7 @@ async def dashboard(
     return {
         "ok": True,
         "owner_id": user_id,
-        "viewer_is_admin": is_admin(viewer_id),
+        "viewer_is_admin": viewer_is_admin,
         "period": period,
         "period_label": period_label,
         "balance_minor": balances.get("KZT", 0),

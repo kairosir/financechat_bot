@@ -313,9 +313,19 @@ class Database:
                 CREATE TABLE IF NOT EXISTS auth_identities (
                     auth_subject TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL UNIQUE,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    email TEXT
                 )
                 """
+            )
+            auth_identity_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(auth_identities)")
+            }
+            if "email" not in auth_identity_columns:
+                connection.execute("ALTER TABLE auth_identities ADD COLUMN email TEXT")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_identities_email ON auth_identities(email) WHERE email IS NOT NULL"
             )
             connection.execute(
                 """
@@ -453,9 +463,12 @@ class Database:
             CREATE TABLE IF NOT EXISTS auth_identities (
                 auth_subject TEXT PRIMARY KEY,
                 user_id BIGINT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                email TEXT
             )
             """,
+            "ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS email TEXT",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_identities_email ON auth_identities(email) WHERE email IS NOT NULL",
             """
             CREATE TABLE IF NOT EXISTS telegram_login_requests (
                 token_hash TEXT PRIMARY KEY,
@@ -1022,7 +1035,7 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT id, balance_minor, currency, interest_rate_bps,
-                       interest_accrual_start_date, deposit_payout_date
+                       interest_accrual_start_date
                 FROM accounts
                 WHERE user_id = ? AND account_type = 'deposit'
                   AND daily_interest_enabled = """
@@ -1033,12 +1046,6 @@ class Database:
             ).fetchall()
             for row in rows:
                 account_id = int(row["id"])
-                payout_date = (
-                    date.fromisoformat(str(row["deposit_payout_date"]))
-                    if row["deposit_payout_date"]
-                    else None
-                )
-                accrual_through = min(today, payout_date) if payout_date else today
                 start_value = row["interest_accrual_start_date"]
                 if not start_value:
                     connection.execute(
@@ -1055,7 +1062,7 @@ class Database:
                 current_date = last_date + timedelta(days=1)
                 balance_minor = int(row["balance_minor"])
                 nominal_rate_bps = int(row["interest_rate_bps"])
-                while current_date <= accrual_through:
+                while current_date <= today:
                     days_in_year = (date(current_date.year + 1, 1, 1) - date(current_date.year, 1, 1)).days
                     amount_minor = int(
                         (
@@ -1558,6 +1565,156 @@ class Database:
             )
             return cursor.rowcount == 1
 
+    async def create_telegram_recovery_request(
+        self,
+        email: str,
+        created_at: datetime,
+        expires_at: datetime,
+    ) -> str:
+        token = secrets.token_urlsafe(24)
+        await asyncio.to_thread(
+            self._create_telegram_recovery_request_sync,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            email.strip().lower(),
+            created_at.isoformat(timespec="seconds"),
+            expires_at.isoformat(timespec="seconds"),
+        )
+        return token
+
+    def _create_telegram_recovery_request_sync(
+        self,
+        token_hash: str,
+        email: str,
+        created_at: str,
+        expires_at: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM telegram_login_requests WHERE expires_at < ?",
+                (created_at,),
+            )
+            identity = connection.execute(
+                "SELECT auth_subject, user_id FROM auth_identities WHERE email = ?",
+                (email,),
+            ).fetchone()
+            auth_subject = None
+            user_id = None
+            if identity is not None and int(identity["user_id"]) > 0:
+                auth_subject = str(identity["auth_subject"])
+                user_id = int(identity["user_id"])
+            connection.execute(
+                """
+                INSERT INTO telegram_login_requests
+                    (token_hash, status, user_id, request_type, auth_subject,
+                     created_at, expires_at, approved_at)
+                VALUES (?, 'pending', ?, 'recovery', ?, ?, ?, NULL)
+                """,
+                (token_hash, user_id, auth_subject, created_at, expires_at),
+            )
+
+    async def telegram_recovery_request_info(
+        self,
+        token: str,
+        telegram_user_id: int,
+        checked_at: datetime,
+    ) -> dict[str, object] | None:
+        if not token or len(token) > 128:
+            return None
+        return await asyncio.to_thread(
+            self._telegram_recovery_request_info_sync,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            telegram_user_id,
+            checked_at.isoformat(timespec="seconds"),
+        )
+
+    def _telegram_recovery_request_info_sync(
+        self,
+        token_hash: str,
+        telegram_user_id: int,
+        checked_at: str,
+    ) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT r.status, r.user_id, r.expires_at, i.email
+                FROM telegram_login_requests r
+                LEFT JOIN auth_identities i ON i.auth_subject = r.auth_subject
+                WHERE r.token_hash = ? AND r.request_type = 'recovery'
+                  AND r.user_id = ? AND r.expires_at >= ?
+                """,
+                (token_hash, telegram_user_id, checked_at),
+            ).fetchone()
+        return dict(row) if row else None
+
+    async def approve_telegram_recovery_request(
+        self,
+        token: str,
+        telegram_user_id: int,
+        approved_at: datetime,
+    ) -> bool:
+        if not token or len(token) > 128:
+            return False
+        return await asyncio.to_thread(
+            self._approve_telegram_recovery_request_sync,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            telegram_user_id,
+            approved_at.isoformat(timespec="seconds"),
+        )
+
+    def _approve_telegram_recovery_request_sync(
+        self,
+        token_hash: str,
+        telegram_user_id: int,
+        approved_at: str,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE telegram_login_requests
+                SET status = 'approved', approved_at = ?
+                WHERE token_hash = ? AND request_type = 'recovery'
+                  AND user_id = ? AND status = 'pending' AND expires_at >= ?
+                """,
+                (approved_at, token_hash, telegram_user_id, approved_at),
+            )
+            return cursor.rowcount == 1
+
+    async def telegram_recovery_status(
+        self,
+        token: str,
+        checked_at: datetime,
+    ) -> dict[str, object] | None:
+        if not token or len(token) > 128:
+            return None
+        return await asyncio.to_thread(
+            self._telegram_recovery_status_sync,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            checked_at.isoformat(timespec="seconds"),
+        )
+
+    def _telegram_recovery_status_sync(
+        self,
+        token_hash: str,
+        checked_at: str,
+    ) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT status, user_id, expires_at
+                FROM telegram_login_requests
+                WHERE token_hash = ? AND request_type = 'recovery'
+                """,
+                (token_hash,),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["expires_at"]) < checked_at:
+            return {"status": "expired", "user_id": None}
+        return {
+            "status": str(row["status"]),
+            "user_id": int(row["user_id"]) if row["user_id"] is not None else None,
+        }
+
     async def create_telegram_link_request(
         self,
         auth_subject: str,
@@ -1940,14 +2097,21 @@ class Database:
         self,
         auth_subject: str,
         created_at: datetime,
+        email: str | None = None,
     ) -> int:
         return await asyncio.to_thread(
             self._user_by_auth_subject_sync,
             auth_subject,
             created_at.isoformat(timespec="seconds"),
+            email.strip().lower() if email else None,
         )
 
-    def _user_by_auth_subject_sync(self, auth_subject: str, created_at: str) -> int:
+    def _user_by_auth_subject_sync(
+        self,
+        auth_subject: str,
+        created_at: str,
+        email: str | None,
+    ) -> int:
         digest = hashlib.sha256(auth_subject.encode("utf-8")).digest()
         generated_user_id = -(int.from_bytes(digest[:7], "big") + 1)
         with self._connect() as connection:
@@ -1956,14 +2120,19 @@ class Database:
                 (auth_subject,),
             ).fetchone()
             if row is not None:
+                if email:
+                    connection.execute(
+                        "UPDATE auth_identities SET email = ? WHERE auth_subject = ?",
+                        (email, auth_subject),
+                    )
                 return int(row["user_id"])
             connection.execute(
                 """
-                INSERT INTO auth_identities (auth_subject, user_id, created_at)
-                VALUES (?, ?, ?)
+                INSERT INTO auth_identities (auth_subject, user_id, created_at, email)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(auth_subject) DO NOTHING
                 """,
-                (auth_subject, generated_user_id, created_at),
+                (auth_subject, generated_user_id, created_at, email),
             )
             row = connection.execute(
                 "SELECT user_id FROM auth_identities WHERE auth_subject = ?",
@@ -1971,6 +2140,20 @@ class Database:
             ).fetchone()
         assert row is not None
         return int(row["user_id"])
+
+    async def auth_identity_by_email(self, email: str) -> dict[str, object] | None:
+        return await asyncio.to_thread(
+            self._auth_identity_by_email_sync,
+            email.strip().lower(),
+        )
+
+    def _auth_identity_by_email_sync(self, email: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT auth_subject, user_id, email FROM auth_identities WHERE email = ?",
+                (email,),
+            ).fetchone()
+        return dict(row) if row else None
 
     async def users_overview(self) -> list[dict[str, object]]:
         return await asyncio.to_thread(self._users_overview_sync)
@@ -1988,6 +2171,7 @@ class Database:
                     UNION SELECT user_id FROM auth_identities
                 )
                 SELECT u.user_id, p.display_name, p.username,
+                       (SELECT email FROM auth_identities i WHERE i.user_id = u.user_id) AS email,
                        (SELECT COUNT(*) FROM accounts a WHERE a.user_id = u.user_id) AS account_count,
                        (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.user_id) AS transaction_count
                 FROM user_ids u

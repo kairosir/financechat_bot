@@ -96,6 +96,20 @@ def telegram_account_link_keyboard(token: str) -> InlineKeyboardMarkup:
     )
 
 
+def telegram_recovery_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить восстановление",
+                    callback_data=f"tg_recovery_confirm:{token}",
+                )
+            ],
+            [InlineKeyboardButton(text="✕ Отмена", callback_data="tg_recovery_cancel")],
+        ]
+    )
+
+
 
 
 def categories_keyboard(

@@ -1,158 +1,838 @@
 <!doctype html>
 <html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-  <meta name="theme-color" content="#f6f4fb">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Purpose">
-  <meta name="description" content="Purpose Finance — счета, доходы и расходы в одном понятном приложении">
-  <title>Purpose Finance</title>
-  <link rel="manifest" href="/manifest.webmanifest?v=3">
-  <link rel="apple-touch-icon" href="/purpose-finance-avatar.png">
-  <link rel="stylesheet" href="/styles.css?v=4">
-  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
-  <script defer src="/auth-client.js?v=3"></script>
-  <script defer src="/app.js?v=4"></script>
-</head>
-<body>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"
+    />
+    <meta name="theme-color" content="#f6f4fb" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Purpose" />
+    <meta
+      name="description"
+      content="Purpose Finance — счета, доходы и расходы в одном понятном приложении"
+    />
+    <title>Purpose Finance</title>
+    <link rel="manifest" href="/manifest.webmanifest?v=3" />
+    <link rel="apple-touch-icon" href="/purpose-finance-avatar.png" />
+    <link rel="stylesheet" href="/styles.css?v=5" />
+    <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+    <script defer src="/auth-client.js?v=3"></script>
+    <script defer src="/app.js?v=5"></script>
+  </head>
+  <body>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <section id="bootScreen" class="boot-screen">
-    <div class="boot-logo" aria-hidden="true">P</div>
-    <strong>Purpose Finance</strong>
-    <span class="spinner"></span>
-    <p id="bootMessage">Подключаем ваши финансы…</p>
-  </section>
-
-  <main id="authScreen" class="auth-screen hidden">
-    <section class="auth-intro">
-      <a class="brand brand-light" href="/" aria-label="Purpose Finance">
-        <span class="brand-logo">P</span><span>Purpose <b>Finance</b></span>
-      </a>
-      <div class="auth-intro-copy">
-        <span class="eyebrow light">Личные финансы без шума</span>
-        <h1>Понимайте, куда уходят деньги.</h1>
-        <p>Все счета, доходы и расходы — в одном спокойном и понятном пространстве.</p>
-        <div class="feature-list">
-          <span>✓ Автоматическая дата и время</span>
-          <span>✓ Карты, наличные и депозиты</span>
-          <span>✓ Одна база с Telegram-ботом</span>
-        </div>
-      </div>
-      <small>Ваши данные доступны только вам</small>
+    <section id="bootScreen" class="boot-screen">
+      <div class="boot-logo" aria-hidden="true">P</div>
+      <strong>Purpose Finance</strong>
+      <span class="spinner"></span>
+      <p id="bootMessage">Подключаем ваши финансы…</p>
     </section>
 
-    <section class="auth-panel">
-      <div class="auth-mobile-brand"><span class="brand-logo">P</span><strong>Purpose Finance</strong></div>
-      <div class="auth-card">
-        <div class="auth-heading">
-          <span class="eyebrow">Личный кабинет</span>
-          <h2 id="authTitle">С возвращением</h2>
-          <p id="authDescription">Войдите, чтобы продолжить вести финансы.</p>
+    <main id="authScreen" class="auth-screen hidden">
+      <section class="auth-intro">
+        <a class="brand brand-light" href="/" aria-label="Purpose Finance">
+          <span class="brand-logo">P</span><span>Purpose <b>Finance</b></span>
+        </a>
+        <div class="auth-intro-copy">
+          <span class="eyebrow light">Личные финансы без шума</span>
+          <h1>Понимайте, куда уходят деньги.</h1>
+          <p>
+            Все счета, доходы и расходы — в одном спокойном и понятном
+            пространстве.
+          </p>
+          <div class="feature-list">
+            <span>✓ Автоматическая дата и время</span>
+            <span>✓ Карты, наличные и депозиты</span>
+            <span>✓ Одна база с Telegram-ботом</span>
+          </div>
         </div>
-        <div id="authTabs" class="auth-tabs" role="tablist">
-          <button type="button" class="active" data-auth-mode="signin" role="tab">Вход</button>
-          <button type="button" data-auth-mode="signup" role="tab">Регистрация</button>
-        </div>
-        <form id="authForm" class="form-stack" novalidate>
-          <label id="authNameLabel" class="field hidden"><span>Имя</span><input id="authName" type="text" autocomplete="name" maxlength="60" placeholder="Как к вам обращаться"></label>
-          <label class="field"><span>Email</span><input id="authEmail" type="email" autocomplete="email" inputmode="email" required placeholder="name@example.com"></label>
-          <label class="field"><span>Пароль</span><span class="password-input"><input id="authPassword" type="password" autocomplete="current-password" minlength="8" required placeholder="Минимум 8 символов"><button type="button" data-password-toggle="authPassword" aria-label="Показать пароль">Показать</button></span></label>
-          <label id="authPasswordConfirmLabel" class="field hidden"><span>Повторите пароль</span><span class="password-input"><input id="authPasswordConfirm" type="password" autocomplete="new-password" minlength="8" placeholder="Введите пароль ещё раз"><button type="button" data-password-toggle="authPasswordConfirm" aria-label="Показать пароль">Показать</button></span></label>
-          <button id="authSubmit" class="button button-primary button-wide" type="submit">Войти</button>
-          <button id="forgotPassword" class="button-link" type="button">Забыли пароль?</button>
-          <p id="authStatus" class="form-status" aria-live="polite"></p>
-        </form>
-        <form id="recoveryForm" class="form-stack hidden" novalidate>
-          <button id="backToSignIn" class="back-link" type="button">← Вернуться ко входу</button>
-          <div class="auth-heading compact"><h2>Восстановление пароля</h2><p>Укажите email — мы отправим безопасную ссылку для создания нового пароля.</p></div>
-          <label class="field"><span>Email</span><input id="recoveryEmail" type="email" autocomplete="email" inputmode="email" required placeholder="name@example.com"></label>
-          <button id="recoverySubmit" class="button button-primary button-wide" type="submit">Отправить ссылку</button>
-          <p id="recoveryStatus" class="form-status" aria-live="polite"></p>
-        </form>
-      </div>
-    </section>
-  </main>
-
-  <section id="miniAppError" class="mini-error hidden">
-    <div class="mini-error-card"><span class="brand-logo">P</span><h1>Откройте через Telegram</h1><p>Mini App автоматически входит через ваш Telegram-аккаунт. Откройте Purpose Finance из меню бота.</p><button id="retryMiniApp" class="button button-primary" type="button">Попробовать снова</button></div>
-  </section>
-
-  <div id="appScreen" class="app-screen hidden">
-    <aside class="sidebar">
-      <a class="brand" href="/" aria-label="Purpose Finance"><span class="brand-logo">P</span><span>Purpose <b>Finance</b></span></a>
-      <nav class="side-nav" aria-label="Основная навигация">
-        <button class="active" data-section="overview"><span>⌂</span>Обзор</button>
-        <button data-section="accounts"><span>▣</span>Счета</button>
-        <button data-section="history"><span>↕</span>История</button>
-        <button data-section="settings"><span>⚙</span>Настройки</button>
-      </nav>
-      <div class="side-foot"><button id="whatsNewButton" class="side-secondary" type="button">✦ Что нового?</button><button id="signOutButton" class="side-secondary hidden" type="button">Выйти</button></div>
-    </aside>
-
-    <main class="workspace">
-      <header class="app-header">
-        <div><span id="todayLabel" class="eyebrow">Сегодня</span><h1 id="welcomeTitle">Ваши финансы</h1></div>
-        <div class="header-actions"><span id="syncState" class="sync-state"><i></i>Синхронизировано</span><button id="profileButton" class="avatar-button hidden" type="button" aria-label="Открыть настройки">PF</button></div>
-      </header>
-
-      <section id="overviewSection" class="view-section" data-view="overview">
-        <div class="period-row">
-          <div id="periodTabs" class="period-tabs" aria-label="Период"><button data-period="day">День</button><button data-period="week">Неделя</button><button data-period="month" class="active">Месяц</button><button data-period="year">Год</button><button data-period="custom">Период</button></div>
-          <div id="customPeriod" class="custom-period hidden"><input id="periodStart" type="date" aria-label="Начальная дата"><span>—</span><input id="periodEnd" type="date" aria-label="Конечная дата"><button id="applyPeriod" class="button button-small" type="button">Показать</button></div>
-        </div>
-
-        <article class="balance-card">
-          <div class="balance-top"><div><span>Общий баланс</span><small id="periodLabel">Этот месяц</small></div><button id="toggleBalances" type="button" aria-label="Скрыть суммы">◉</button></div>
-          <h2 id="balance">0 ₸</h2><div id="currencyTotals" class="currency-totals"></div>
-          <div class="money-flow"><div><span class="flow-icon income">↙</span><span><small>Доходы</small><strong id="income">+0 ₸</strong></span></div><div><span class="flow-icon expense">↗</span><span><small>Расходы</small><strong id="expense">−0 ₸</strong></span></div></div>
-        </article>
-
-        <div class="quick-actions" aria-label="Быстрые действия">
-          <button type="button" data-new-kind="expense"><span class="quick-icon expense">−</span><b>Расход</b><small>Записать трату</small></button>
-          <button type="button" data-new-kind="income"><span class="quick-icon income">＋</span><b>Доход</b><small>Добавить средства</small></button>
-          <button id="quickNewAccount" type="button"><span class="quick-icon account">▣</span><b>Новый счёт</b><small>Карта или наличные</small></button>
-        </div>
-
-        <div class="content-grid">
-          <section class="panel accounts-panel"><div class="section-heading"><div><span class="eyebrow">Ваши деньги</span><h2>Счета</h2></div><button id="newAccount" class="button-link" type="button">＋ Добавить</button></div><div id="accounts" class="accounts-grid"></div></section>
-          <section class="panel categories-panel"><div class="section-heading"><div><span class="eyebrow">За период</span><h2>Куда ушли деньги</h2></div></div><div id="topCategories" class="category-chart"></div></section>
-        </div>
-        <section class="panel history-panel"><div class="section-heading"><div><span class="eyebrow">Последние операции</span><h2 id="historyTitle">Этот месяц</h2></div><button data-section="history" class="button-link" type="button">Вся история →</button></div><div id="historyPreview" class="history-list"></div></section>
+        <small>Ваши данные доступны только вам</small>
       </section>
 
-      <section id="accountsSection" class="view-section hidden" data-view="accounts"><div class="page-heading"><div><span class="eyebrow">Все средства</span><h1>Счета</h1><p>Карты, наличные и депозиты в одном месте.</p></div><button class="button button-primary" data-create-account type="button">＋ Новый счёт</button></div><div id="accountsFull" class="accounts-grid accounts-full"></div></section>
-      <section id="historySection" class="view-section hidden" data-view="history"><div class="page-heading"><div><span class="eyebrow">Движение денег</span><h1>История</h1><p id="historySubtitle">Операции за этот месяц</p></div><button class="button button-primary" data-new-kind="expense" type="button">＋ Операция</button></div><div id="historyFull" class="history-list history-full"></div></section>
-      <section id="settingsSection" class="view-section hidden" data-view="settings"><div class="page-heading"><div><span class="eyebrow">Ваш профиль</span><h1>Настройки</h1><p>Безопасность и связь с Telegram.</p></div></div><div id="settingsContent" class="settings-grid"></div></section>
+      <section class="auth-panel">
+        <div class="auth-mobile-brand">
+          <span class="brand-logo">P</span><strong>Purpose Finance</strong>
+        </div>
+        <div class="auth-card">
+          <div class="auth-heading">
+            <span class="eyebrow">Личный кабинет</span>
+            <h2 id="authTitle">С возвращением</h2>
+            <p id="authDescription">Войдите, чтобы продолжить вести финансы.</p>
+          </div>
+          <div id="authTabs" class="auth-tabs" role="tablist">
+            <button
+              type="button"
+              class="active"
+              data-auth-mode="signin"
+              role="tab"
+            >
+              Вход
+            </button>
+            <button type="button" data-auth-mode="signup" role="tab">
+              Регистрация
+            </button>
+          </div>
+          <form id="authForm" class="form-stack" novalidate>
+            <label id="authNameLabel" class="field hidden"
+              ><span>Имя</span
+              ><input
+                id="authName"
+                type="text"
+                autocomplete="name"
+                maxlength="60"
+                placeholder="Как к вам обращаться"
+            /></label>
+            <label class="field"
+              ><span>Email</span
+              ><input
+                id="authEmail"
+                type="email"
+                autocomplete="email"
+                inputmode="email"
+                required
+                placeholder="name@example.com"
+            /></label>
+            <label class="field"
+              ><span>Пароль</span
+              ><span class="password-input"
+                ><input
+                  id="authPassword"
+                  type="password"
+                  autocomplete="current-password"
+                  minlength="8"
+                  required
+                  placeholder="Минимум 8 символов"
+                /><button
+                  type="button"
+                  data-password-toggle="authPassword"
+                  aria-label="Показать пароль"
+                >
+                  Показать
+                </button></span
+              ></label
+            >
+            <label id="authPasswordConfirmLabel" class="field hidden"
+              ><span>Повторите пароль</span
+              ><span class="password-input"
+                ><input
+                  id="authPasswordConfirm"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="8"
+                  placeholder="Введите пароль ещё раз"
+                /><button
+                  type="button"
+                  data-password-toggle="authPasswordConfirm"
+                  aria-label="Показать пароль"
+                >
+                  Показать
+                </button></span
+              ></label
+            >
+            <button
+              id="authSubmit"
+              class="button button-primary button-wide"
+              type="submit"
+            >
+              Войти
+            </button>
+            <button id="forgotPassword" class="button-link" type="button">
+              Забыли пароль?
+            </button>
+            <p id="authStatus" class="form-status" aria-live="polite"></p>
+          </form>
+          <form id="recoveryForm" class="form-stack hidden" novalidate>
+            <button id="backToSignIn" class="back-link" type="button">
+              ← Вернуться ко входу
+            </button>
+            <div class="auth-heading compact">
+              <h2>Восстановление пароля</h2>
+              <p>
+                Укажите email — мы отправим безопасную ссылку для создания
+                нового пароля.
+              </p>
+            </div>
+            <label class="field"
+              ><span>Email</span
+              ><input
+                id="recoveryEmail"
+                type="email"
+                autocomplete="email"
+                inputmode="email"
+                required
+                placeholder="name@example.com"
+            /></label>
+            <button
+              id="recoverySubmit"
+              class="button button-primary button-wide"
+              type="submit"
+            >
+              Отправить ссылку
+            </button>
+            <button
+              id="recoveryTelegram"
+              class="button button-wide"
+              type="button"
+            >
+              Восстановить через Telegram
+            </button>
+            <small class="field-hint"
+              >Работает, если Telegram ранее был привязан к этому
+              аккаунту.</small
+            >
+            <p id="recoveryStatus" class="form-status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
     </main>
 
-    <button id="mobileFab" class="mobile-fab" type="button" aria-label="Добавить операцию">＋</button>
-    <nav class="bottom-nav" aria-label="Мобильная навигация"><button class="active" data-section="overview"><span>⌂</span><small>Обзор</small></button><button data-section="accounts"><span>▣</span><small>Счета</small></button><span class="nav-gap"></span><button data-section="history"><span>↕</span><small>История</small></button><button data-section="settings"><span>⚙</span><small>Ещё</small></button></nav>
-  </div>
+    <section id="miniAppError" class="mini-error hidden">
+      <div class="mini-error-card">
+        <span class="brand-logo">P</span>
+        <h1>Откройте через Telegram</h1>
+        <p>
+          Mini App автоматически входит через ваш Telegram-аккаунт. Откройте
+          Purpose Finance из меню бота.
+        </p>
+        <button id="retryMiniApp" class="button button-primary" type="button">
+          Попробовать снова
+        </button>
+      </div>
+    </section>
 
-  <div id="sheetBackdrop" class="backdrop hidden"></div>
-  <aside id="transactionSheet" class="sheet" aria-hidden="true">
-    <div class="sheet-handle"></div><div class="sheet-header"><div><span class="eyebrow">Новая запись</span><h2 id="transactionTitle">Расход</h2></div><button id="closeTransaction" class="icon-button" type="button" aria-label="Закрыть">×</button></div>
-    <div class="kind-switch"><button type="button" class="active" data-kind="expense">Расход</button><button type="button" data-kind="income">Доход</button></div>
-    <form id="transactionForm" class="form-stack"><label class="amount-field"><span>Сумма</span><span class="amount-input"><input id="amountInput" inputmode="decimal" autocomplete="off" placeholder="0" required><b id="transactionCurrencySymbol">₸</b></span></label><label class="field"><span>Категория</span><select id="categorySelect" required></select></label><button id="newCategory" class="button-link align-left" type="button">＋ Создать свою категорию</button><label class="field"><span>Счёт</span><select id="accountSelect" required></select></label><label class="field"><span>Комментарий <small>необязательно</small></span><input id="noteInput" maxlength="120" placeholder="Например, обед с друзьями"></label><button id="saveTransaction" class="button button-primary button-wide" type="submit">Сохранить</button><p id="transactionStatus" class="form-status" aria-live="polite"></p></form>
-  </aside>
+    <div id="appScreen" class="app-screen hidden">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Purpose Finance"
+          ><span class="brand-logo">P</span
+          ><span>Purpose <b>Finance</b></span></a
+        >
+        <nav class="side-nav" aria-label="Основная навигация">
+          <button class="active" data-section="overview">
+            <span>⌂</span>Обзор
+          </button>
+          <button data-section="accounts"><span>▣</span>Счета</button>
+          <button data-section="history"><span>↕</span>История</button>
+          <button data-section="settings"><span>⚙</span>Настройки</button>
+        </nav>
+        <div class="side-foot">
+          <button id="whatsNewButton" class="side-secondary" type="button">
+            ✦ Что нового?</button
+          ><button
+            id="signOutButton"
+            class="side-secondary hidden"
+            type="button"
+          >
+            Выйти
+          </button>
+        </div>
+      </aside>
 
-  <dialog id="accountDialog" class="modal">
-    <form id="accountForm" class="form-stack"><div class="modal-header"><div><span id="accountDialogEyebrow" class="eyebrow">Добавление</span><h2 id="accountDialogTitle">Новый счёт</h2></div><button class="icon-button" data-close-dialog="accountDialog" type="button">×</button></div><label class="field"><span>Название</span><input id="accountName" maxlength="24" required placeholder="Например, Kaspi Gold"></label><div class="choice-grid" id="accountTypeChoices"><button type="button" class="active" data-account-type="card">💳<span>Карта</span></button><button type="button" data-account-type="cash">💵<span>Наличные</span></button><button type="button" data-account-type="deposit">🏦<span>Депозит</span></button></div><label class="field"><span>Валюта</span><select id="accountCurrency"><option value="KZT">₸ Тенге</option><option value="RUB">₽ Рубли</option><option value="USD">$ Доллары</option></select><small id="accountCurrencyHint" class="field-hint hidden">Валюту существующего счёта изменить нельзя — его история останется корректной.</small></label><label class="field"><span>Текущий остаток</span><span class="amount-input small"><input id="accountBalance" inputmode="decimal" value="0" required><b id="accountCurrencySymbol">₸</b></span><small class="field-hint">Можно в любой момент заменить на фактический остаток из приложения банка.</small></label><div id="depositFields" class="deposit-fields hidden"><div class="rate-explainer"><b>Как банк считает проценты</b><p><strong>Номинальная ставка</strong> делится на 365/366 дней — по ней рассчитывается ежедневное начисление. <strong>Эффективная ставка</strong> показывает итоговую доходность за год с учётом капитализации.</p></div><div class="two-fields"><label class="field"><span>Номинальная ставка, %</span><input id="nominalRate" inputmode="decimal" placeholder="15,5"></label><label class="field"><span>Эффективная ставка, %</span><input id="effectiveRate" inputmode="decimal" placeholder="16,7"></label></div><div class="two-fields"><label class="field"><span>Уже начислено банком</span><span class="amount-input small"><input id="bankAccruedInterest" inputmode="decimal" value="0" placeholder="0"><b id="bankInterestCurrencySymbol">₸</b></span><small class="field-hint">Проценты, которые банк показывает, но ещё не добавил к остатку.</small></label><label class="field"><span>Дата выплаты депозита</span><input id="depositPayoutDate" type="date"><small class="field-hint">Покажем прогноз процентов и суммы к этой дате.</small></label></div><label class="check-field"><input id="dailyInterest" type="checkbox"><span><b>Ежедневное начисление</b><small>Проценты автоматически добавляются к депозиту и записываются в историю</small></span></label></div><button id="accountSubmit" class="button button-primary button-wide" type="submit">Создать счёт</button><p id="accountStatus" class="form-status"></p></form>
-  </dialog>
+      <main class="workspace">
+        <header class="app-header">
+          <div>
+            <span id="todayLabel" class="eyebrow">Сегодня</span>
+            <h1 id="welcomeTitle">Ваши финансы</h1>
+          </div>
+          <div class="header-actions">
+            <span id="syncState" class="sync-state"
+              ><i></i>Синхронизировано</span
+            ><button
+              id="profileButton"
+              class="avatar-button hidden"
+              type="button"
+              aria-label="Открыть настройки"
+            >
+              PF
+            </button>
+          </div>
+        </header>
 
-  <dialog id="categoryDialog" class="modal modal-small"><form id="categoryForm" class="form-stack"><div class="modal-header"><div><span class="eyebrow">Категория</span><h2>Свой вариант</h2></div><button class="icon-button" data-close-dialog="categoryDialog" type="button">×</button></div><label class="field"><span>Название</span><input id="categoryName" maxlength="30" required placeholder="Например, Питомцы"></label><button class="button button-primary button-wide" type="submit">Добавить</button><p id="categoryStatus" class="form-status"></p></form></dialog>
+        <section id="overviewSection" class="view-section" data-view="overview">
+          <div class="period-row">
+            <div id="periodTabs" class="period-tabs" aria-label="Период">
+              <button data-period="day">День</button
+              ><button data-period="week">Неделя</button
+              ><button data-period="month" class="active">Месяц</button
+              ><button data-period="year">Год</button
+              ><button data-period="custom">Период</button>
+            </div>
+            <div id="customPeriod" class="custom-period hidden">
+              <input
+                id="periodStart"
+                type="date"
+                aria-label="Начальная дата"
+              /><span>—</span
+              ><input
+                id="periodEnd"
+                type="date"
+                aria-label="Конечная дата"
+              /><button
+                id="applyPeriod"
+                class="button button-small"
+                type="button"
+              >
+                Показать
+              </button>
+            </div>
+          </div>
 
-  <dialog id="profileDialog" class="modal modal-wide">
-    <div class="modal-header"><div><span class="eyebrow">Аккаунт</span><h2>Личный кабинет</h2></div><button class="icon-button" data-close-dialog="profileDialog" type="button">×</button></div>
-    <div class="profile-grid"><section class="settings-card"><span class="eyebrow">Email</span><h3 id="profileEmail">—</h3><p>По нему вы входите во внешнем браузере.</p></section><section class="settings-card"><span class="eyebrow">Telegram</span><h3 id="telegramLinkTitle">Проверяем…</h3><p id="telegramLinkDescription">Загружаем состояние связи.</p><div class="button-row"><button id="linkTelegramButton" class="button button-primary" type="button">Привязать</button><button id="checkTelegramLinkButton" class="button" type="button">Проверить</button><button id="unlinkTelegramButton" class="button button-danger hidden" type="button">Отвязать</button></div><p id="profileStatus" class="form-status"></p></section><section class="settings-card full"><span class="eyebrow">Безопасность</span><h3>Сменить пароль</h3><form id="changePasswordForm" class="form-stack compact-form"><label class="field"><span>Текущий пароль</span><input id="currentPassword" type="password" minlength="8" autocomplete="current-password" required></label><div class="two-fields"><label class="field"><span>Новый пароль</span><input id="newPassword" type="password" minlength="8" autocomplete="new-password" required></label><label class="field"><span>Повторите пароль</span><input id="newPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required></label></div><label class="check-field"><input id="revokeOtherSessions" type="checkbox" checked><span><b>Завершить другие сеансы</b></span></label><button id="changePasswordSubmit" class="button button-primary" type="submit">Изменить пароль</button><p id="changePasswordStatus" class="form-status"></p></form></section></div>
-  </dialog>
+          <article class="balance-card">
+            <div class="balance-top">
+              <div>
+                <span>Общий баланс</span
+                ><small id="periodLabel">Этот месяц</small>
+              </div>
+              <button
+                id="toggleBalances"
+                type="button"
+                aria-label="Скрыть суммы"
+              >
+                ◉
+              </button>
+            </div>
+            <h2 id="balance">0 ₸</h2>
+            <div id="currencyTotals" class="currency-totals"></div>
+            <div class="money-flow">
+              <div>
+                <span class="flow-icon income">↙</span
+                ><span
+                  ><small>Доходы</small><strong id="income">+0 ₸</strong></span
+                >
+              </div>
+              <div>
+                <span class="flow-icon expense">↗</span
+                ><span
+                  ><small>Расходы</small
+                  ><strong id="expense">−0 ₸</strong></span
+                >
+              </div>
+            </div>
+          </article>
 
-  <dialog id="resetDialog" class="modal modal-small"><form id="resetForm" class="form-stack"><div class="modal-header"><div><span class="eyebrow">Восстановление</span><h2>Новый пароль</h2></div><button class="icon-button" data-close-dialog="resetDialog" type="button">×</button></div><label class="field"><span>Новый пароль</span><span class="password-input"><input id="resetPassword" type="password" minlength="8" autocomplete="new-password" required><button type="button" data-password-toggle="resetPassword">Показать</button></span></label><label class="field"><span>Повторите пароль</span><span class="password-input"><input id="resetPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required><button type="button" data-password-toggle="resetPasswordConfirm">Показать</button></span></label><button class="button button-primary button-wide" type="submit">Сохранить пароль</button><p id="resetStatus" class="form-status"></p></form></dialog>
+          <div class="quick-actions" aria-label="Быстрые действия">
+            <button type="button" data-new-kind="expense">
+              <span class="quick-icon expense">−</span><b>Расход</b
+              ><small>Записать трату</small>
+            </button>
+            <button type="button" data-new-kind="income">
+              <span class="quick-icon income">＋</span><b>Доход</b
+              ><small>Добавить средства</small>
+            </button>
+            <button id="quickNewAccount" type="button">
+              <span class="quick-icon account">▣</span><b>Новый счёт</b
+              ><small>Карта или наличные</small>
+            </button>
+          </div>
 
-  <dialog id="updatesDialog" class="modal modal-wide"><div class="modal-header"><div><span class="eyebrow">История продукта</span><h2>Что нового?</h2></div><button class="icon-button" data-close-dialog="updatesDialog" type="button">×</button></div><div id="updatesList" class="updates-list"></div></dialog>
-</body>
+          <div class="content-grid">
+            <section class="panel accounts-panel">
+              <div class="section-heading">
+                <div>
+                  <span class="eyebrow">Ваши деньги</span>
+                  <h2>Счета</h2>
+                </div>
+                <button id="newAccount" class="button-link" type="button">
+                  ＋ Добавить
+                </button>
+              </div>
+              <div id="accounts" class="accounts-grid"></div>
+            </section>
+            <section class="panel categories-panel">
+              <div class="section-heading">
+                <div>
+                  <span class="eyebrow">За период</span>
+                  <h2>Куда ушли деньги</h2>
+                </div>
+              </div>
+              <div id="topCategories" class="category-chart"></div>
+            </section>
+          </div>
+          <section class="panel history-panel">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Последние операции</span>
+                <h2 id="historyTitle">Этот месяц</h2>
+              </div>
+              <button data-section="history" class="button-link" type="button">
+                Вся история →
+              </button>
+            </div>
+            <div id="historyPreview" class="history-list"></div>
+          </section>
+        </section>
+
+        <section
+          id="accountsSection"
+          class="view-section hidden"
+          data-view="accounts"
+        >
+          <div class="page-heading">
+            <div>
+              <span class="eyebrow">Все средства</span>
+              <h1>Счета</h1>
+              <p>Карты, наличные и депозиты в одном месте.</p>
+            </div>
+            <button
+              class="button button-primary"
+              data-create-account
+              type="button"
+            >
+              ＋ Новый счёт
+            </button>
+          </div>
+          <div id="accountsFull" class="accounts-grid accounts-full"></div>
+        </section>
+        <section
+          id="historySection"
+          class="view-section hidden"
+          data-view="history"
+        >
+          <div class="page-heading">
+            <div>
+              <span class="eyebrow">Движение денег</span>
+              <h1>История</h1>
+              <p id="historySubtitle">Операции за этот месяц</p>
+            </div>
+            <button
+              class="button button-primary"
+              data-new-kind="expense"
+              type="button"
+            >
+              ＋ Операция
+            </button>
+          </div>
+          <div id="historyFull" class="history-list history-full"></div>
+        </section>
+        <section
+          id="settingsSection"
+          class="view-section hidden"
+          data-view="settings"
+        >
+          <div class="page-heading">
+            <div>
+              <span class="eyebrow">Ваш профиль</span>
+              <h1>Настройки</h1>
+              <p>Безопасность и связь с Telegram.</p>
+            </div>
+          </div>
+          <div id="settingsContent" class="settings-grid"></div>
+        </section>
+      </main>
+
+      <button
+        id="mobileFab"
+        class="mobile-fab"
+        type="button"
+        aria-label="Добавить операцию"
+      >
+        ＋
+      </button>
+      <nav class="bottom-nav" aria-label="Мобильная навигация">
+        <button class="active" data-section="overview">
+          <span>⌂</span><small>Обзор</small></button
+        ><button data-section="accounts">
+          <span>▣</span><small>Счета</small></button
+        ><span class="nav-gap"></span
+        ><button data-section="history">
+          <span>↕</span><small>История</small></button
+        ><button data-section="settings">
+          <span>⚙</span><small>Ещё</small>
+        </button>
+      </nav>
+    </div>
+
+    <div id="sheetBackdrop" class="backdrop hidden"></div>
+    <aside id="transactionSheet" class="sheet" aria-hidden="true">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <div>
+          <span class="eyebrow">Новая запись</span>
+          <h2 id="transactionTitle">Расход</h2>
+        </div>
+        <button
+          id="closeTransaction"
+          class="icon-button"
+          type="button"
+          aria-label="Закрыть"
+        >
+          ×
+        </button>
+      </div>
+      <div class="kind-switch">
+        <button type="button" class="active" data-kind="expense">Расход</button
+        ><button type="button" data-kind="income">Доход</button>
+      </div>
+      <form id="transactionForm" class="form-stack">
+        <label class="amount-field"
+          ><span>Сумма</span
+          ><span class="amount-input"
+            ><input
+              id="amountInput"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="0"
+              required
+            /><b id="transactionCurrencySymbol">₸</b></span
+          ></label
+        ><label class="field"
+          ><span>Категория</span
+          ><select id="categorySelect" required></select></label
+        ><button id="newCategory" class="button-link align-left" type="button">
+          ＋ Создать свою категорию</button
+        ><label class="field"
+          ><span>Счёт</span
+          ><select id="accountSelect" required></select></label
+        ><label class="field"
+          ><span>Комментарий <small>необязательно</small></span
+          ><input
+            id="noteInput"
+            maxlength="120"
+            placeholder="Например, обед с друзьями" /></label
+        ><button
+          id="saveTransaction"
+          class="button button-primary button-wide"
+          type="submit"
+        >
+          Сохранить
+        </button>
+        <p id="transactionStatus" class="form-status" aria-live="polite"></p>
+      </form>
+    </aside>
+
+    <dialog id="accountDialog" class="modal">
+      <form id="accountForm" class="form-stack">
+        <div class="modal-header">
+          <div>
+            <span id="accountDialogEyebrow" class="eyebrow">Добавление</span>
+            <h2 id="accountDialogTitle">Новый счёт</h2>
+          </div>
+          <button
+            class="icon-button"
+            data-close-dialog="accountDialog"
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+        <label class="field"
+          ><span>Название</span
+          ><input
+            id="accountName"
+            maxlength="24"
+            required
+            placeholder="Например, Kaspi Gold"
+        /></label>
+        <div class="choice-grid" id="accountTypeChoices">
+          <button type="button" class="active" data-account-type="card">
+            💳<span>Карта</span></button
+          ><button type="button" data-account-type="cash">
+            💵<span>Наличные</span></button
+          ><button type="button" data-account-type="deposit">
+            🏦<span>Депозит</span>
+          </button>
+        </div>
+        <label class="field"
+          ><span>Валюта</span
+          ><select id="accountCurrency">
+            <option value="KZT">₸ Тенге</option>
+            <option value="RUB">₽ Рубли</option>
+            <option value="USD">$ Доллары</option></select
+          ><small id="accountCurrencyHint" class="field-hint hidden"
+            >Валюту существующего счёта изменить нельзя — его история останется
+            корректной.</small
+          ></label
+        ><label class="field"
+          ><span>Текущий остаток</span
+          ><span class="amount-input small"
+            ><input
+              id="accountBalance"
+              inputmode="decimal"
+              value="0"
+              required
+            /><b id="accountCurrencySymbol">₸</b></span
+          ><small class="field-hint"
+            >Можно в любой момент заменить на фактический остаток из приложения
+            банка.</small
+          ></label
+        >
+        <div id="depositFields" class="deposit-fields hidden">
+          <div class="rate-explainer">
+            <b>Как банк считает проценты</b>
+            <p>
+              <strong>Номинальная ставка</strong> делится на 365/366 дней — по
+              ней рассчитывается ежедневное начисление.
+              <strong>Эффективная ставка</strong> показывает итоговую доходность
+              за год с учётом капитализации.
+            </p>
+          </div>
+          <div class="two-fields">
+            <label class="field"
+              ><span>Номинальная ставка, %</span
+              ><input
+                id="nominalRate"
+                inputmode="decimal"
+                placeholder="15,5" /></label
+            ><label class="field"
+              ><span>Эффективная ставка, %</span
+              ><input id="effectiveRate" inputmode="decimal" placeholder="16,7"
+            /></label>
+          </div>
+          <div class="two-fields">
+            <label class="field"
+              ><span>Уже начислено банком</span
+              ><span class="amount-input small"
+                ><input
+                  id="bankAccruedInterest"
+                  inputmode="decimal"
+                  value="0"
+                  placeholder="0"
+                /><b id="bankInterestCurrencySymbol">₸</b></span
+              ><small class="field-hint"
+                >Проценты, которые банк показывает, но ещё не добавил к
+                остатку.</small
+              ></label
+            ><label class="field"
+              ><span>День ежемесячной выплаты</span
+              ><input id="depositPayoutDate" type="date" /><small
+                class="field-hint"
+                >Запомним число месяца и будем считать депозит постоянно. Для
+                29–31 числа в коротком месяце берётся последний день.</small
+              ></label
+            >
+          </div>
+          <label class="check-field"
+            ><input id="dailyInterest" type="checkbox" /><span
+              ><b>Ежедневное начисление</b
+              ><small
+                >Проценты автоматически добавляются к депозиту и записываются в
+                историю</small
+              ></span
+            ></label
+          >
+        </div>
+        <button
+          id="accountSubmit"
+          class="button button-primary button-wide"
+          type="submit"
+        >
+          Создать счёт
+        </button>
+        <p id="accountStatus" class="form-status"></p>
+      </form>
+    </dialog>
+
+    <dialog id="categoryDialog" class="modal modal-small">
+      <form id="categoryForm" class="form-stack">
+        <div class="modal-header">
+          <div>
+            <span class="eyebrow">Категория</span>
+            <h2>Свой вариант</h2>
+          </div>
+          <button
+            class="icon-button"
+            data-close-dialog="categoryDialog"
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+        <label class="field"
+          ><span>Название</span
+          ><input
+            id="categoryName"
+            maxlength="30"
+            required
+            placeholder="Например, Питомцы" /></label
+        ><button class="button button-primary button-wide" type="submit">
+          Добавить
+        </button>
+        <p id="categoryStatus" class="form-status"></p>
+      </form>
+    </dialog>
+
+    <dialog id="profileDialog" class="modal modal-wide">
+      <div class="modal-header">
+        <div>
+          <span class="eyebrow">Аккаунт</span>
+          <h2>Личный кабинет</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="profileDialog"
+          type="button"
+        >
+          ×
+        </button>
+      </div>
+      <div class="profile-grid">
+        <section class="settings-card">
+          <span class="eyebrow">Email</span>
+          <h3 id="profileEmail">—</h3>
+          <p>По нему вы входите во внешнем браузере.</p>
+        </section>
+        <section class="settings-card">
+          <span class="eyebrow">Telegram</span>
+          <h3 id="telegramLinkTitle">Проверяем…</h3>
+          <p id="telegramLinkDescription">Загружаем состояние связи.</p>
+          <div class="button-row">
+            <button
+              id="linkTelegramButton"
+              class="button button-primary"
+              type="button"
+            >
+              Привязать</button
+            ><button id="checkTelegramLinkButton" class="button" type="button">
+              Проверить</button
+            ><button
+              id="unlinkTelegramButton"
+              class="button button-danger hidden"
+              type="button"
+            >
+              Отвязать
+            </button>
+          </div>
+          <p id="profileStatus" class="form-status"></p>
+        </section>
+        <section class="settings-card full">
+          <span class="eyebrow">Безопасность</span>
+          <h3>Сменить пароль</h3>
+          <form id="changePasswordForm" class="form-stack compact-form">
+            <label class="field"
+              ><span>Текущий пароль</span
+              ><input
+                id="currentPassword"
+                type="password"
+                minlength="8"
+                autocomplete="current-password"
+                required
+            /></label>
+            <div class="two-fields">
+              <label class="field"
+                ><span>Новый пароль</span
+                ><input
+                  id="newPassword"
+                  type="password"
+                  minlength="8"
+                  autocomplete="new-password"
+                  required /></label
+              ><label class="field"
+                ><span>Повторите пароль</span
+                ><input
+                  id="newPasswordConfirm"
+                  type="password"
+                  minlength="8"
+                  autocomplete="new-password"
+                  required
+              /></label>
+            </div>
+            <label class="check-field"
+              ><input id="revokeOtherSessions" type="checkbox" checked /><span
+                ><b>Завершить другие сеансы</b></span
+              ></label
+            ><button
+              id="changePasswordSubmit"
+              class="button button-primary"
+              type="submit"
+            >
+              Изменить пароль
+            </button>
+            <p id="changePasswordStatus" class="form-status"></p>
+          </form>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="adminDialog" class="modal modal-wide">
+      <div class="modal-header">
+        <div>
+          <span class="eyebrow">Только владелец</span>
+          <h2>Панель администратора</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="adminDialog"
+          type="button"
+        >
+          ×
+        </button>
+      </div>
+      <p class="admin-security-note">
+        Доступ проверяется сервером по email администратора. Остальные
+        пользователи получают отказ, даже если попробуют открыть API напрямую.
+      </p>
+      <div id="adminUsersList" class="updates-list">
+        <div class="empty-state">Загрузка…</div>
+      </div>
+    </dialog>
+
+    <dialog id="resetDialog" class="modal modal-small">
+      <form id="resetForm" class="form-stack">
+        <div class="modal-header">
+          <div>
+            <span class="eyebrow">Восстановление</span>
+            <h2>Новый пароль</h2>
+          </div>
+          <button
+            class="icon-button"
+            data-close-dialog="resetDialog"
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+        <label class="field"
+          ><span>Новый пароль</span
+          ><span class="password-input"
+            ><input
+              id="resetPassword"
+              type="password"
+              minlength="8"
+              autocomplete="new-password"
+              required
+            /><button type="button" data-password-toggle="resetPassword">
+              Показать
+            </button></span
+          ></label
+        ><label class="field"
+          ><span>Повторите пароль</span
+          ><span class="password-input"
+            ><input
+              id="resetPasswordConfirm"
+              type="password"
+              minlength="8"
+              autocomplete="new-password"
+              required
+            /><button type="button" data-password-toggle="resetPasswordConfirm">
+              Показать
+            </button></span
+          ></label
+        ><button class="button button-primary button-wide" type="submit">
+          Сохранить пароль
+        </button>
+        <p id="resetStatus" class="form-status"></p>
+      </form>
+    </dialog>
+
+    <dialog id="updatesDialog" class="modal modal-wide">
+      <div class="modal-header">
+        <div>
+          <span class="eyebrow">История продукта</span>
+          <h2>Что нового?</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="updatesDialog"
+          type="button"
+        >
+          ×
+        </button>
+      </div>
+      <div id="updatesList" class="updates-list"></div>
+    </dialog>
+  </body>
 </html>

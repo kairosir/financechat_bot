@@ -24,9 +24,13 @@ let dashboardData = null;
 let telegramLinkToken = '';
 let telegramLinkTimer = null;
 let toastTimer = null;
+let currentUserMeta = null;
+let recoveryToken = '';
+let recoveryTimer = null;
 
 const ACTIVITY_KEY = 'purpose_finance_activity_v2';
 const LINK_KEY = 'purpose_finance_link_v2';
+const RECOVERY_KEY = 'purpose_finance_recovery_v1';
 const INACTIVITY_MS = 3 * 24 * 60 * 60 * 1000;
 
 if (isMiniApp) {
@@ -132,6 +136,7 @@ function sessionInactive() {
 
 async function signOut({inactive = false} = {}) {
   try { await authClient?.signOut(); } catch (_) {}
+  try { await fetch('/api/auth/telegram/logout',{method:'POST'}); } catch (_) {}
   authSession = null;
   authToken = '';
   localStorage.removeItem(ACTIVITY_KEY);
@@ -151,7 +156,7 @@ function accountCard(item) {
     details = `Ном. ${escapeHtml(item.nominal_interest_rate || item.interest_rate || '—')} · Эфф. ${escapeHtml(item.effective_interest_rate || '—')}`;
     if (item.daily_interest_enabled) details += ` · ежедневно<br>Сегодня +${escapeHtml(item.interest_accrued_today || '0')} · примерно ${escapeHtml(item.estimated_daily_interest || '0')}/день`;
     if (item.bank_accrued_interest_minor > 0) details += `<br>Начислено банком: ${escapeHtml(item.bank_accrued_interest)}`;
-    if (item.deposit_payout_date) details += `<br>Выплата ${escapeHtml(item.deposit_payout_date_formatted)} · прогноз ${escapeHtml(item.projected_payout_amount)} (+${escapeHtml(item.projected_future_interest)})`;
+    if (item.deposit_payout_date) details += `<br>Выплата ежемесячно ${escapeHtml(item.deposit_payout_day)}-го · ближайшая ${escapeHtml(item.next_payout_date_formatted)}<br>Прогноз к ближайшей выплате ${escapeHtml(item.projected_payout_amount)} (+${escapeHtml(item.projected_future_interest)})`;
   }
   return `<button type="button" class="account-card ${escapeHtml(item.account_type)}" data-edit-account="${item.id}"><div class="account-head"><span>${escapeHtml(item.name)}</span><span class="account-icon">${meta.icon}</span></div><strong>${escapeHtml(item.balance)}</strong><small>${details}</small></button>`;
 }
@@ -207,6 +212,7 @@ async function loadDashboard() {
 async function enterApplication() {
   await loadDashboard();
   const me = await api('/api/me').catch(() => ({can_sign_out:false}));
+  currentUserMeta = me;
   $('signOutButton').classList.toggle('hidden', isMiniApp || isShortcut || !me.can_sign_out);
   $('profileButton').classList.toggle('hidden', !authSession);
   renderSettings();
@@ -297,6 +303,57 @@ $('recoveryForm').addEventListener('submit', async event => {
     setStatus('recoveryStatus','Если аккаунт существует, письмо уже отправлено. Проверьте также папку «Спам».','success');
   } catch (error) { setStatus('recoveryStatus',friendlyError(error),'error'); }
   finally { $('recoverySubmit').disabled = false; }
+});
+
+function stopRecoveryPolling() { clearInterval(recoveryTimer); recoveryTimer = null; }
+function storeRecovery(data, email) {
+  recoveryToken = data.token;
+  localStorage.setItem(RECOVERY_KEY,JSON.stringify({token:data.token,email,expires:Date.now()+data.expires_in*1000}));
+}
+function restoreRecovery() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RECOVERY_KEY) || 'null');
+    if (!saved?.token || saved.expires < Date.now()) return null;
+    recoveryToken = saved.token;
+    return saved;
+  } catch (_) { return null; }
+}
+function clearRecovery() { recoveryToken = ''; localStorage.removeItem(RECOVERY_KEY); stopRecoveryPolling(); }
+async function checkRecovery() {
+  const saved = restoreRecovery();
+  if (!saved) return;
+  const result = await api(`/api/auth/telegram/recovery/status?token=${encodeURIComponent(saved.token)}`);
+  if (result.status === 'approved') {
+    clearRecovery();
+    try { await authClient?.requestPasswordReset({email:saved.email,redirectTo:`${location.origin}/?reset=1`}); } catch (_) {}
+    setStatus('recoveryStatus','Telegram подтвердил личность. Доступ восстановлен, а ссылка для нового пароля отправлена на email.','success');
+    toast('Доступ восстановлен через Telegram');
+    await enterApplication();
+    return true;
+  }
+  if (result.status === 'expired') {
+    clearRecovery();
+    setStatus('recoveryStatus','Запрос истёк. Создайте новый.','error');
+  }
+  return false;
+}
+function startRecoveryPolling() {
+  stopRecoveryPolling();
+  recoveryTimer = setInterval(() => checkRecovery().catch(() => {}),2500);
+}
+$('recoveryTelegram').addEventListener('click',async () => {
+  const email = $('recoveryEmail').value.trim().toLowerCase();
+  if (!email || !email.includes('@')) return setStatus('recoveryStatus','Укажите корректный email','error');
+  $('recoveryTelegram').disabled = true;
+  setStatus('recoveryStatus','Создаём безопасный запрос…');
+  try {
+    const data = await api('/api/auth/telegram/recovery/start',{method:'POST',body:JSON.stringify({email})});
+    storeRecovery(data,email);
+    startRecoveryPolling();
+    setStatus('recoveryStatus','Подтвердите восстановление в привязанном Telegram и вернитесь сюда.');
+    location.href = data.telegram_url;
+  } catch (error) { setStatus('recoveryStatus',friendlyError(error),'error'); }
+  finally { $('recoveryTelegram').disabled = false; }
 });
 
 $('resetForm').addEventListener('submit', async event => {
@@ -476,14 +533,29 @@ $('toggleBalances').addEventListener('click', () => document.body.classList.togg
 
 function renderSettings() {
   if (authSession) {
-    $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Аккаунт</span><h3>${escapeHtml(authSession.user?.email || 'Email-аккаунт')}</h3><p>Пароль, безопасность и привязка Telegram находятся в личном кабинете.</p><button id="openProfileSettings" class="button button-primary" type="button">Открыть личный кабинет</button></article><article class="settings-card"><span class="eyebrow">Сессия</span><h3>Автовыход через 3 дня</h3><p>Если вы не пользуетесь сайтом три дня, вход будет завершён автоматически.</p><button id="settingsSignOut" class="button" type="button">Выйти сейчас</button></article><article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового в Purpose Finance</h3><p>История улучшений сайта и Telegram-бота.</p><button id="settingsUpdates" class="button" type="button">Посмотреть обновления</button></article>`;
+    const adminCard = currentUserMeta?.is_admin ? `<article class="settings-card full admin-card"><span class="eyebrow">Администратор</span><h3>Панель управления</h3><p>Просмотр пользователей и их счетов. Доступ разрешён только владельцу.</p><button id="openAdminPanel" class="button button-primary" type="button">Открыть админку</button></article>` : '';
+    $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Аккаунт</span><h3>${escapeHtml(authSession.user?.email || 'Email-аккаунт')}</h3><p>Пароль, безопасность и привязка Telegram находятся в личном кабинете.</p><button id="openProfileSettings" class="button button-primary" type="button">Открыть личный кабинет</button></article><article class="settings-card"><span class="eyebrow">Сессия</span><h3>Автовыход через 3 дня</h3><p>Если вы не пользуетесь сайтом три дня, вход будет завершён автоматически.</p><button id="settingsSignOut" class="button" type="button">Выйти сейчас</button></article>${adminCard}<article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового в Purpose Finance</h3><p>История улучшений сайта и Telegram-бота.</p><button id="settingsUpdates" class="button" type="button">Посмотреть обновления</button></article>`;
     $('openProfileSettings').onclick = openProfile;
     $('settingsSignOut').onclick = () => signOut();
     $('settingsUpdates').onclick = openUpdates;
+    if ($('openAdminPanel')) $('openAdminPanel').onclick = openAdminPanel;
   } else {
     $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Telegram Mini App</span><h3>Вы вошли автоматически</h3><p>Аккаунт определён Telegram. Пароль и отдельная регистрация здесь не нужны.</p></article><article class="settings-card"><span class="eyebrow">Синхронизация</span><h3>Одна база с ботом</h3><p>Все изменения, сделанные здесь или в чате с ботом, отображаются одинаково.</p></article><article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового?</h3><p>Посмотрите последние изменения продукта.</p><button id="settingsUpdates" class="button" type="button">Открыть</button></article>`;
     $('settingsUpdates').onclick = openUpdates;
   }
+}
+
+async function openAdminPanel() {
+  $('adminDialog').showModal();
+  $('adminUsersList').innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+  try {
+    const data = await api('/api/admin/users');
+    $('adminUsersList').innerHTML = (data.users || []).map(user => {
+      const title = user.email || user.display_name || (user.username ? `@${user.username}` : `Пользователь ${user.user_id}`);
+      const accounts = (user.accounts || []).map(account => `<li><b>${escapeHtml(account.name)}</b><span>${escapeHtml(account.balance)} · ${escapeHtml(account.account_type)}</span></li>`).join('');
+      return `<article class="release-card admin-user-card"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(user.display_name || user.username || `ID ${user.user_id}`)}</p><small>Счетов: ${Number(user.account_count)||0} · операций: ${Number(user.transaction_count)||0}</small><ul class="admin-account-list">${accounts || '<li>Счетов пока нет</li>'}</ul></article>`;
+    }).join('') || '<div class="empty-state">Пользователей пока нет.</div>';
+  } catch (error) { $('adminUsersList').innerHTML = `<div class="empty-state">${escapeHtml(friendlyError(error))}</div>`; }
 }
 
 function storeLink(token, expiresIn = 600) {
@@ -569,7 +641,7 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=9').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=10').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {
@@ -580,6 +652,11 @@ async function boot() {
     const config = await configResponse.json();
     if (!config.auth_enabled || !window.PurposeAuthBundle?.createClient) throw new Error('Сервис входа временно недоступен');
     authClient = window.PurposeAuthBundle.createClient(config.auth_url);
+    const pendingRecovery = restoreRecovery();
+    if (pendingRecovery) {
+      startRecoveryPolling();
+      if (await checkRecovery().catch(() => false)) return;
+    }
     await refreshAuthToken(2);
     if (authSession && sessionInactive()) { await signOut({inactive:true}); return; }
     const params = new URLSearchParams(location.search);
@@ -598,6 +675,7 @@ async function boot() {
 
 document.addEventListener('visibilitychange',() => {
   if (!document.hidden && telegramLinkToken) checkLink().catch(() => {});
+  if (!document.hidden && recoveryToken) checkRecovery().catch(() => {});
 });
 
 boot();

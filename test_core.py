@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,6 +13,8 @@ from bot import format_money, parse_amount
 from api.index import (
     create_telegram_session,
     deposit_projection,
+    is_admin_email,
+    next_monthly_payout,
     resolve_neon_auth_issuers,
     verify_telegram_login_data,
     verify_telegram_session,
@@ -88,6 +90,8 @@ class AmountTests(unittest.TestCase):
             resolve_neon_auth_issuers(base_url, "https://issuer.example/custom/"),
             ("https://issuer.example/custom",),
         )
+        self.assertTrue(is_admin_email("  ARHEY575@gmail.com ", {"arhey575@gmail.com"}))
+        self.assertFalse(is_admin_email("other@gmail.com", {"arhey575@gmail.com"}))
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -278,6 +282,45 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             "already_linked",
         )
 
+    async def test_telegram_recovery_requires_linked_matching_account(self) -> None:
+        now = datetime(2026, 10, 12, 12, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        auth_subject = "recovery-user"
+        email = "user@example.com"
+        await self.database.user_by_auth_subject(auth_subject, now, email)
+
+        unavailable = await self.database.create_telegram_recovery_request(
+            email, now, now + timedelta(minutes=10)
+        )
+        self.assertIsNone(
+            await self.database.telegram_recovery_request_info(unavailable, 42, now)
+        )
+
+        link_token = await self.database.create_telegram_link_request(
+            auth_subject, now, now + timedelta(minutes=10)
+        )
+        self.assertEqual(
+            await self.database.confirm_telegram_link_request(link_token, 42, now),
+            "approved",
+        )
+        token = await self.database.create_telegram_recovery_request(
+            email, now, now + timedelta(minutes=10)
+        )
+        self.assertIsNone(
+            await self.database.telegram_recovery_request_info(token, 7, now)
+        )
+        info = await self.database.telegram_recovery_request_info(token, 42, now)
+        assert info is not None
+        self.assertEqual(info["email"], email)
+        self.assertFalse(
+            await self.database.approve_telegram_recovery_request(token, 7, now)
+        )
+        self.assertTrue(
+            await self.database.approve_telegram_recovery_request(token, 42, now)
+        )
+        status = await self.database.telegram_recovery_status(token, now)
+        assert status is not None
+        self.assertEqual(status, {"status": "approved", "user_id": 42})
+
     async def test_accounts_balances_transfer_and_undo(self) -> None:
         now = datetime(2026, 10, 3, 12, 30, tzinfo=ZoneInfo("Asia/Almaty"))
         cash = await self.database.add_account(
@@ -447,10 +490,22 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             42,
             datetime(2026, 10, 12, 9, 0, tzinfo=timezone),
         )
-        self.assertEqual(credited[deposit.id], 2_001)
+        self.assertEqual(credited[deposit.id], 6_015)
         updated = await self.database.get_account(deposit.id, 42)
         assert updated is not None
-        self.assertEqual(updated.balance_minor, 1_002_001)
+        self.assertEqual(updated.balance_minor, 1_006_015)
+        future, payout, days = deposit_projection(updated, date(2026, 10, 12))
+        self.assertGreater(future, 0)
+        self.assertGreater(payout, updated.balance_minor)
+        self.assertEqual(days, 27)
+        self.assertEqual(
+            next_monthly_payout("2026-01-31", date(2026, 2, 1)),
+            date(2026, 2, 28),
+        )
+        self.assertEqual(
+            next_monthly_payout("2026-01-31", date(2026, 3, 1)),
+            date(2026, 3, 31),
+        )
         self.assertTrue(await self.database.set_account_balance(deposit.id, 42, 1_500_000))
         corrected = await self.database.get_account(deposit.id, 42)
         assert corrected is not None

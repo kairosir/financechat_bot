@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from calendar import monthrange
 import html
 import logging
 import os
@@ -46,6 +47,7 @@ from keyboards import (
     summary_keyboard,
     telegram_account_link_keyboard,
     telegram_login_confirm_keyboard,
+    telegram_recovery_keyboard,
     transfer_account_keyboard,
     web_app_keyboard,
 )
@@ -153,7 +155,7 @@ def deposit_projection(item: object, as_of: date) -> tuple[int, int, int | None]
     balance_minor = int(getattr(item, "balance_minor"))
     if not payout_value or nominal is None:
         return 0, balance_minor, None
-    payout_date = date.fromisoformat(str(payout_value))
+    payout_date = next_monthly_payout(str(payout_value), as_of)
     remaining_days = max((payout_date - as_of).days, 0)
     projected_balance = balance_minor
     future_interest = 0
@@ -177,6 +179,22 @@ def deposit_projection(item: object, as_of: date) -> tuple[int, int, int | None]
         projected_balance += future_interest
     projected_balance += int(getattr(item, "bank_accrued_interest_minor", 0))
     return future_interest, projected_balance, remaining_days
+
+
+def next_monthly_payout(anchor_value: str, as_of: date) -> date:
+    payout_day = date.fromisoformat(anchor_value).day
+    candidate = date(
+        as_of.year,
+        as_of.month,
+        min(payout_day, monthrange(as_of.year, as_of.month)[1]),
+    )
+    if candidate >= as_of:
+        return candidate
+    if as_of.month == 12:
+        year, month = as_of.year + 1, 1
+    else:
+        year, month = as_of.year, as_of.month + 1
+    return date(year, month, min(payout_day, monthrange(year, month)[1]))
 
 
 def format_money(amount_minor: int, currency: str = "KZT") -> str:
@@ -341,6 +359,31 @@ async def command_start(message: Message, state: FSMContext) -> None:
             reply_markup=telegram_account_link_keyboard(token),
         )
         return
+    if start_parameter.startswith("recover_"):
+        token = start_parameter.removeprefix("recover_")
+        if not token or len(token) > 48 or not message.from_user:
+            await message.answer("Ссылка восстановления повреждена. Вернитесь на сайт и попробуйте ещё раз.")
+            return
+        request_info = await db.telegram_recovery_request_info(
+            token,
+            message.from_user.id,
+            datetime.now(timezone),
+        )
+        if request_info is None:
+            await message.answer(
+                "Запрос не найден. Убедитесь, что этот Telegram привязан к указанному аккаунту сайта."
+            )
+            return
+        email = str(request_info.get("email") or "")
+        local, _, domain = email.partition("@")
+        masked_email = f"{local[:2]}***@{domain}" if domain else "аккаунта сайта"
+        await message.answer(
+            "<b>Восстановление доступа</b>\n\n"
+            f"Подтвердить вход и восстановление для <b>{html.escape(masked_email)}</b>?\n\n"
+            "Если вы не начинали восстановление на сайте — нажмите «Отмена».",
+            reply_markup=telegram_recovery_keyboard(token),
+        )
+        return
     name = html.escape(message.from_user.first_name) if message.from_user else ""
     await message.answer(
         f"Привет, {name}! 👋\n\n"
@@ -459,6 +502,33 @@ async def confirm_telegram_account_link(callback: CallbackQuery) -> None:
 async def cancel_telegram_account_link(callback: CallbackQuery) -> None:
     if callback.message:
         await callback.message.edit_text("Привязка Telegram отменена.")
+    await callback.answer("Отменено")
+
+
+@router.callback_query(F.data.startswith("tg_recovery_confirm:"))
+async def confirm_telegram_recovery(callback: CallbackQuery) -> None:
+    token = (callback.data or "").removeprefix("tg_recovery_confirm:")
+    approved = await db.approve_telegram_recovery_request(
+        token,
+        callback.from_user.id,
+        datetime.now(timezone),
+    )
+    if not approved:
+        await callback.answer("Запрос истёк или относится к другому аккаунту", show_alert=True)
+        return
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Личность подтверждена ✓</b>\n\n"
+            "Вернитесь на сайт. Доступ восстановится автоматически, а для нового пароля "
+            "сайт предложит безопасную ссылку Neon Auth."
+        )
+    await callback.answer("Подтверждено")
+
+
+@router.callback_query(F.data == "tg_recovery_cancel")
+async def cancel_telegram_recovery(callback: CallbackQuery) -> None:
+    if callback.message:
+        await callback.message.edit_text("Восстановление доступа отменено.")
     await callback.answer("Отменено")
 
 
@@ -1076,7 +1146,8 @@ async def show_accounts_panel(
                 if today_minor:
                     rate += f" · сегодня +{format_money(today_minor, item.currency)}"
             if item.deposit_payout_date:
-                rate += f" · выплата {date.fromisoformat(item.deposit_payout_date):%d.%m.%Y}"
+                payout_day = date.fromisoformat(item.deposit_payout_date).day
+                rate += f" · выплата ежемесячно {payout_day}-го"
         lines.append(
             f"{icon} <b>{html.escape(item.name)}</b> — "
             f"{format_money(item.balance_minor, item.currency)}{rate}"
@@ -1324,8 +1395,11 @@ async def account_add_bank_interest(message: Message, state: FSMContext) -> None
     await state.update_data(bank_accrued_interest_minor=amount_minor)
     await state.set_state(ManageAccount.entering_payout_date)
     await message.answer(
-        "<b>Дата выплаты депозита</b>\n\n"
-        "Введите дату в формате <b>31.12.2026</b>. Если точной даты нет — отправьте <b>нет</b>.",
+        "<b>День ежемесячной выплаты</b>\n\n"
+        "Введите ближайшую дату выплаты в формате <b>31.12.2026</b>. "
+        "Бот запомнит число месяца и будет считать депозит постоянно. "
+        "Для 29–31 числа в коротком месяце используется последний день. "
+        "Если даты нет — отправьте <b>нет</b>.",
         reply_markup=back_cancel_keyboard("accounts:back"),
     )
 
@@ -1361,7 +1435,7 @@ async def account_add_payout_date(message: Message, state: FSMContext) -> None:
             f"Номинальная: <b>{format_interest_rate(updated.interest_rate_bps)}</b>\n"
             f"Эффективная: <b>{format_interest_rate(updated.effective_interest_rate_bps)}</b>\n"
             f"Начислено банком: <b>{format_money(updated.bank_accrued_interest_minor, updated.currency)}</b>\n"
-            f"Дата выплаты: <b>{date.fromisoformat(updated.deposit_payout_date):%d.%m.%Y}</b>"
+            f"Выплата: <b>ежемесячно {date.fromisoformat(updated.deposit_payout_date).day}-го числа</b>"
             if updated.deposit_payout_date
             else "✅ Параметры депозита обновлены. Дата выплаты не указана."
         )
@@ -1424,8 +1498,13 @@ async def account_manage(callback: CallbackQuery) -> None:
                 datetime.now(timezone).date(),
             )
             if item.deposit_payout_date:
+                next_payout = next_monthly_payout(
+                    item.deposit_payout_date,
+                    datetime.now(timezone).date(),
+                )
                 details += (
-                    f"\nДата выплаты: <b>{date.fromisoformat(item.deposit_payout_date):%d.%m.%Y}</b>"
+                    f"\nВыплата: <b>ежемесячно {date.fromisoformat(item.deposit_payout_date).day}-го числа</b>"
+                    f" · ближайшая {next_payout:%d.%m.%Y}"
                     f" · осталось {remaining_days} дн."
                     f"\nПрогноз к выплате: <b>{format_money(projected_payout, item.currency)}</b>"
                     f" (ещё +{format_money(future_interest, item.currency)})"
