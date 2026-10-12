@@ -11,12 +11,14 @@ from zoneinfo import ZoneInfo
 
 from bot import format_money, parse_amount
 from api.index import (
+    create_site_session,
     create_telegram_session,
     deposit_projection,
     is_admin_email,
     next_monthly_payout,
     resolve_neon_auth_issuers,
     verify_telegram_login_data,
+    verify_site_session,
     verify_telegram_session,
 )
 from database import Database
@@ -76,6 +78,18 @@ class AmountTests(unittest.TestCase):
         session = create_telegram_session(7297320277, bot_token)
         self.assertEqual(verify_telegram_session(session, bot_token), 7297320277)
         self.assertIsNone(verify_telegram_session(session, "wrong-token"))
+
+        site_session = create_site_session(
+            "auth-user",
+            -42,
+            "User@Example.com",
+            bot_token,
+        )
+        self.assertEqual(
+            verify_site_session(site_session, bot_token),
+            {"sub": "auth-user", "user_id": -42, "email": "user@example.com"},
+        )
+        self.assertIsNone(verify_site_session(site_session, "wrong-token"))
 
     def test_neon_auth_issuer_accepts_managed_auth_variants(self) -> None:
         base_url = "https://example.neonauth.test/neondb/auth/"

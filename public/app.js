@@ -277,18 +277,13 @@ $('authForm').addEventListener('submit', async event => {
   setStatus('authStatus', authMode === 'signup' ? 'Создаём аккаунт…' : 'Входим…');
   try {
     const credentials = {email,password};
-    let result = authMode === 'signup'
-      ? await authClient.signUp.email({...credentials,name:$('authName').value.trim() || email.split('@')[0]})
-      : await authClient.signIn.email(credentials);
-    if (result?.error) throw new Error(friendlyError(result.error));
-    if (authMode === 'signup' && !result?.data?.session) {
-      result = await authClient.signIn.email(credentials);
-      if (result?.error) throw new Error(friendlyError(result.error));
-    }
-    authSession = result?.data?.user ? result.data : null;
-    authToken = authSession?.session?.token || '';
-    if (!authToken) await refreshAuthToken(8);
-    if (!authToken) throw new Error('Сессию не удалось открыть. Попробуйте войти ещё раз.');
+    const endpoint = authMode === 'signup' ? '/api/auth/email/signup' : '/api/auth/email/login';
+    const session = await api(endpoint,{
+      method:'POST',
+      body:JSON.stringify({...credentials,name:$('authName').value.trim() || email.split('@')[0]}),
+    });
+    authSession = {user:{email:session.email},session:{}};
+    authToken = '';
     await api('/api/auth/session');
     localStorage.setItem(ACTIVITY_KEY,String(Date.now()));
     setStatus('authStatus','Готово','success');
@@ -654,7 +649,7 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=11').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=12').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {
@@ -669,6 +664,15 @@ async function boot() {
     if (pendingRecovery) {
       startRecoveryPolling();
       if (await checkRecovery().catch(() => false)) return;
+    }
+    const firstPartySession = await api('/api/me').catch(() => null);
+    if (firstPartySession?.auth_mode === 'email') {
+      authSession = {user:{email:firstPartySession.email},session:{}};
+      currentUserMeta = firstPartySession;
+      if (sessionInactive()) { await signOut({inactive:true}); return; }
+      localStorage.setItem(ACTIVITY_KEY,localStorage.getItem(ACTIVITY_KEY) || String(Date.now()));
+      await enterApplication();
+      return;
     }
     await refreshAuthToken(2);
     if (authSession && sessionInactive()) { await signOut({inactive:true}); return; }

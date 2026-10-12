@@ -17,6 +17,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import Update
+import aiohttp
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 import jwt
 from jwt import PyJWKClient
@@ -68,6 +69,8 @@ ADMIN_EMAILS = {
 }
 TELEGRAM_SESSION_COOKIE = "purpose_finance_telegram"
 TELEGRAM_SESSION_ISSUER = "purpose-finance-telegram"
+SITE_SESSION_COOKIE = "purpose_finance_site"
+SITE_SESSION_ISSUER = "purpose-finance-site"
 TELEGRAM_SESSION_TTL_SECONDS = 3 * 24 * 60 * 60
 _jwks_client = PyJWKClient(NEON_AUTH_JWKS_URL, cache_keys=True) if NEON_AUTH_JWKS_URL else None
 _telegram_bot_username: str | None = None
@@ -196,6 +199,50 @@ def verify_telegram_session(token: str, bot_token: str = BOT_TOKEN) -> int | Non
     return user_id if user_id > 0 else None
 
 
+def create_site_session(
+    auth_subject: str,
+    user_id: int,
+    email: str,
+    bot_token: str = BOT_TOKEN,
+) -> str:
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "sub": auth_subject,
+            "user_id": user_id,
+            "email": email.strip().lower(),
+            "iat": now,
+            "exp": now + TELEGRAM_SESSION_TTL_SECONDS,
+            "iss": SITE_SESSION_ISSUER,
+            "type": "site_web",
+        },
+        telegram_session_secret(bot_token),
+        algorithm="HS256",
+    )
+
+
+def verify_site_session(token: str, bot_token: str = BOT_TOKEN) -> dict[str, object] | None:
+    if not token or not bot_token:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            telegram_session_secret(bot_token),
+            algorithms=["HS256"],
+            issuer=SITE_SESSION_ISSUER,
+        )
+        if payload.get("type") != "site_web":
+            return None
+        subject = str(payload.get("sub", "")).strip()
+        user_id = int(payload.get("user_id", 0))
+        email = str(payload.get("email", "")).strip().lower()
+    except (InvalidTokenError, TypeError, ValueError):
+        return None
+    if not subject or user_id == 0 or not email:
+        return None
+    return {"sub": subject, "user_id": user_id, "email": email}
+
+
 async def telegram_bot_username() -> str | None:
     global _telegram_bot_username
     if _telegram_bot_username:
@@ -227,6 +274,9 @@ async def authorized_user(request: Request) -> int:
             datetime.now(TIMEZONE),
             str(auth_claims.get("email") or "") or None,
         )
+    site_session = verify_site_session(request.cookies.get(SITE_SESSION_COOKIE, ""))
+    if site_session is not None:
+        return int(site_session["user_id"])
     telegram_session_user = verify_telegram_session(
         request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
     )
@@ -251,12 +301,14 @@ async def neon_auth_subject(request: Request) -> str:
 
 async def neon_auth_identity(request: Request) -> dict[str, object]:
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-    if scheme.lower() != "bearer" or token.count(".") != 2:
-        raise HTTPException(status_code=401, detail="Войдите по email")
-    claims = await verify_neon_auth_claims(token)
-    if not claims:
-        raise HTTPException(status_code=401, detail="Сессия истекла. Войдите заново")
-    return claims
+    if scheme.lower() == "bearer" and token.count(".") == 2:
+        claims = await verify_neon_auth_claims(token)
+        if claims:
+            return claims
+    site_session = verify_site_session(request.cookies.get(SITE_SESSION_COOKIE, ""))
+    if site_session is not None:
+        return site_session
+    raise HTTPException(status_code=401, detail="Сессия истекла. Войдите заново")
 
 
 async def verify_neon_auth_claims(token: str) -> dict[str, object] | None:
@@ -535,6 +587,122 @@ async def public_config() -> dict[str, object]:
     }
 
 
+async def request_neon_email_auth(
+    path: str,
+    email: str,
+    password: str,
+    name: str | None = None,
+) -> tuple[dict[str, object], str]:
+    if not NEON_AUTH_BASE_URL:
+        raise HTTPException(status_code=503, detail="Сервис входа временно недоступен")
+    payload: dict[str, object] = {"email": email, "password": password}
+    if name is not None:
+        payload["name"] = name
+    headers = {
+        "Content-Type": "application/json",
+        "X-Neon-Client-Info": json.dumps(
+            {"sdk": "@neondatabase/auth", "version": "0.5.0-beta", "runtime": "server"}
+        ),
+    }
+    if PUBLIC_BASE_URL:
+        headers["Origin"] = PUBLIC_BASE_URL
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{NEON_AUTH_BASE_URL}{path}",
+                json=payload,
+                headers=headers,
+            ) as result:
+                data = await result.json(content_type=None)
+                token = result.headers.get("set-auth-jwt", "")
+                if result.status >= 400:
+                    message = str(data.get("message") or data.get("error") or "") if isinstance(data, dict) else ""
+                    if result.status in {400, 401, 403}:
+                        raise HTTPException(status_code=401, detail="Неверный email или пароль")
+                    raise HTTPException(status_code=502, detail=message or "Сервис входа временно недоступен")
+            if not token:
+                async with session.get(
+                    f"{NEON_AUTH_BASE_URL}/token",
+                    headers=headers,
+                ) as token_result:
+                    if token_result.status < 400:
+                        token_data = await token_result.json(content_type=None)
+                        if isinstance(token_data, dict):
+                            token = str(token_data.get("token") or "")
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+        raise HTTPException(status_code=503, detail="Сервис входа временно недоступен") from error
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="Сервис входа вернул некорректный ответ")
+    session_data = data.get("session")
+    if not token and isinstance(session_data, dict):
+        token = str(session_data.get("token") or "")
+    if not token:
+        token = str(data.get("token") or "")
+    return data, token
+
+
+async def establish_site_email_session(
+    response: Response,
+    email: str,
+    password: str,
+    signup: bool,
+    name: str | None = None,
+) -> dict[str, object]:
+    if signup:
+        await request_neon_email_auth("/sign-up/email", email, password, name)
+    _, token = await request_neon_email_auth("/sign-in/email", email, password)
+    claims = await verify_neon_auth_claims(token) if token else None
+    if not claims:
+        raise HTTPException(status_code=401, detail="Не удалось подтвердить сессию. Попробуйте ещё раз")
+    verified_email = str(claims.get("email") or email).strip().lower()
+    await ensure_initialized()
+    user_id = await db.user_by_auth_subject(
+        str(claims["sub"]),
+        datetime.now(TIMEZONE),
+        verified_email,
+    )
+    response.set_cookie(
+        SITE_SESSION_COOKIE,
+        create_site_session(str(claims["sub"]), user_id, verified_email),
+        max_age=TELEGRAM_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True, "email": verified_email}
+
+
+@app.post("/api/auth/email/login")
+async def email_login(request: Request, response: Response) -> dict[str, object]:
+    payload = await request.json()
+    email = str(payload.get("email", "")).strip().lower() if isinstance(payload, dict) else ""
+    password = str(payload.get("password", "")) if isinstance(payload, dict) else ""
+    if not email or "@" not in email or len(password) < 8:
+        raise HTTPException(status_code=400, detail="Проверьте email и пароль")
+    return await establish_site_email_session(response, email, password, False)
+
+
+@app.post("/api/auth/email/signup")
+async def email_signup(request: Request, response: Response) -> dict[str, object]:
+    payload = await request.json()
+    email = str(payload.get("email", "")).strip().lower() if isinstance(payload, dict) else ""
+    password = str(payload.get("password", "")) if isinstance(payload, dict) else ""
+    name = str(payload.get("name", "")).strip() if isinstance(payload, dict) else ""
+    if not email or "@" not in email or len(password) < 8:
+        raise HTTPException(status_code=400, detail="Проверьте email и пароль")
+    return await establish_site_email_session(
+        response,
+        email,
+        password,
+        True,
+        name[:80] or email.split("@", 1)[0],
+    )
+
+
 @app.get("/api/auth/session")
 async def validate_auth_session(request: Request) -> dict[str, bool]:
     await neon_auth_subject(request)
@@ -667,6 +835,13 @@ async def telegram_logout(response: Response) -> dict[str, bool]:
         httponly=True,
         samesite="lax",
     )
+    response.delete_cookie(
+        SITE_SESSION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
     return {"ok": True}
 
 
@@ -677,6 +852,7 @@ async def me(request: Request, response: Response) -> dict[str, object]:
     telegram_session_user = verify_telegram_session(
         request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
     )
+    site_session = verify_site_session(request.cookies.get(SITE_SESSION_COOKIE, ""))
     if telegram_session_user is not None:
         response.set_cookie(
             TELEGRAM_SESSION_COOKIE,
@@ -687,14 +863,30 @@ async def me(request: Request, response: Response) -> dict[str, object]:
             samesite="lax",
             path="/",
         )
+    if site_session is not None:
+        response.set_cookie(
+            SITE_SESSION_COOKIE,
+            create_site_session(
+                str(site_session["sub"]),
+                int(site_session["user_id"]),
+                str(site_session["email"]),
+            ),
+            max_age=TELEGRAM_SESSION_TTL_SECONDS,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
     can_sign_out = telegram_session_user is not None or (
         scheme.lower() == "bearer" and token.count(".") == 2
-    )
+    ) or site_session is not None
     return {
         "ok": True,
         "user_id": user_id,
         "is_admin": await is_site_admin(request),
         "can_sign_out": can_sign_out,
+        "auth_mode": "email" if site_session is not None or token.count(".") == 2 else "telegram",
+        "email": str(site_session.get("email") or "") if site_session else "",
     }
 
 
