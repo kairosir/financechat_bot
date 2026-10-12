@@ -1763,7 +1763,12 @@ async def main() -> None:
     except ZoneInfoNotFoundError as error:
         raise RuntimeError(f"Неизвестный часовой пояс: {timezone_name}") from error
 
-    db = Database(os.getenv("DATABASE_PATH", "data/finance.db"))
+    database_location = (
+        os.getenv("DATABASE_URL", "").strip()
+        or os.getenv("DATABASE_PATH", "").strip()
+        or "data/finance.db"
+    )
+    db = Database(database_location)
     await db.initialize()
     admin_ids = {
         int(value.strip())
