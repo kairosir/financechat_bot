@@ -84,18 +84,29 @@ function tokenExpiresSoon(token, threshold = 30_000) {
 
 async function refreshAuthToken(attempts = 1) {
   if (!authClient) return false;
+  const previousSession = authSession;
+  const previousToken = authToken;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const result = await authClient.getSession();
-    authSession = result?.data?.user ? result.data : null;
-    authToken = '';
-    if (!authSession) return false;
+    let result = null;
+    try { result = await authClient.getSession(); } catch (_) {}
+    const freshSession = result?.data?.user ? result.data : null;
+    if (!freshSession) {
+      if (attempt + 1 < attempts) {
+        await new Promise(resolve => setTimeout(resolve, 350));
+        continue;
+      }
+      authSession = previousSession;
+      authToken = previousToken;
+      return Boolean(authSession && authToken);
+    }
+    authSession = freshSession;
+    authToken = freshSession?.session?.token || '';
     try {
       const tokenResult = await authClient.token();
-      authToken = tokenResult?.data?.token || tokenResult?.data?.session?.token || '';
+      authToken = tokenResult?.data?.token || tokenResult?.data?.session?.token || authToken;
     } catch (_) {}
-    authToken ||= authSession?.session?.token || '';
     if (authToken) return true;
-    await new Promise(resolve => setTimeout(resolve, 250));
+    await new Promise(resolve => setTimeout(resolve, 350));
   }
   return false;
 }
@@ -274,7 +285,9 @@ $('authForm').addEventListener('submit', async event => {
       result = await authClient.signIn.email(credentials);
       if (result?.error) throw new Error(friendlyError(result.error));
     }
-    await refreshAuthToken(3);
+    authSession = result?.data?.user ? result.data : null;
+    authToken = authSession?.session?.token || '';
+    if (!authToken) await refreshAuthToken(8);
     if (!authToken) throw new Error('Сессию не удалось открыть. Попробуйте войти ещё раз.');
     await api('/api/auth/session');
     localStorage.setItem(ACTIVITY_KEY,String(Date.now()));
@@ -641,7 +654,7 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=10').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=11').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {
