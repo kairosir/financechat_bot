@@ -8,6 +8,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 
-COPY bot.py database.py keyboards.py shortcut_api.py ./
+COPY bot.py database.py keyboards.py shortcut_api.py updates.py ./
 
 CMD ["python", "bot.py"]
