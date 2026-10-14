@@ -62,11 +62,7 @@ ADMIN_IDS = {
     for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
     if value.strip().lstrip("-").isdigit()
 }
-ADMIN_EMAILS = {
-    value.strip().lower()
-    for value in os.getenv("ADMIN_EMAILS", "").split(",")
-    if value.strip()
-}
+OWNER_ADMIN_EMAIL = "arhey575@gmail.com"
 TELEGRAM_SESSION_COOKIE = "purpose_finance_telegram"
 TELEGRAM_SESSION_ISSUER = "purpose-finance-telegram"
 SITE_SESSION_COOKIE = "purpose_finance_site"
@@ -257,7 +253,7 @@ async def telegram_bot_username() -> str | None:
     return _telegram_bot_username
 
 
-async def authorized_user(request: Request) -> int:
+async def authorized_user(request: Request, initialize: bool = True) -> int:
     telegram_user_id = verify_telegram_init_data(
         request.headers.get("X-Telegram-Init-Data", "")
     )
@@ -266,6 +262,8 @@ async def authorized_user(request: Request) -> int:
     if scheme.lower() == "bearer" and token.count(".") == 2:
         auth_claims = await verify_neon_auth_claims(token)
     if telegram_user_id is not None:
+        if initialize:
+            await ensure_initialized()
         return telegram_user_id
     if auth_claims:
         await ensure_initialized()
@@ -276,11 +274,15 @@ async def authorized_user(request: Request) -> int:
         )
     site_session = verify_site_session(request.cookies.get(SITE_SESSION_COOKIE, ""))
     if site_session is not None:
+        if initialize:
+            await ensure_initialized()
         return int(site_session["user_id"])
     telegram_session_user = verify_telegram_session(
         request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
     )
     if telegram_session_user is not None:
+        if initialize:
+            await ensure_initialized()
         return telegram_session_user
     if scheme.lower() == "bearer" and token:
         await ensure_initialized()
@@ -346,7 +348,7 @@ def is_admin(user_id: int) -> bool:
 
 
 def is_admin_email(email: str, allowed: set[str] | None = None) -> bool:
-    configured = ADMIN_EMAILS if allowed is None else allowed
+    configured = {OWNER_ADMIN_EMAIL} if allowed is None else allowed
     return email.strip().lower() in configured
 
 
@@ -356,6 +358,12 @@ async def is_site_admin(request: Request) -> bool:
     except HTTPException:
         return False
     return is_admin_email(str(claims.get("email") or ""))
+
+
+async def require_site_admin(request: Request) -> int:
+    if not await is_site_admin(request):
+        raise HTTPException(status_code=404, detail="Страница не найдена")
+    return await authorized_user(request)
 
 
 async def selected_user(request: Request, owner_id: int | None) -> tuple[int, int]:
@@ -849,7 +857,7 @@ async def telegram_logout(response: Response) -> dict[str, bool]:
 
 @app.get("/api/me")
 async def me(request: Request, response: Response) -> dict[str, object]:
-    user_id = await authorized_user(request)
+    user_id = await authorized_user(request, initialize=False)
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     telegram_session_user = verify_telegram_session(
         request.cookies.get(TELEGRAM_SESSION_COOKIE, "")
@@ -882,14 +890,16 @@ async def me(request: Request, response: Response) -> dict[str, object]:
     can_sign_out = telegram_session_user is not None or (
         scheme.lower() == "bearer" and token.count(".") == 2
     ) or site_session is not None
-    return {
+    result: dict[str, object] = {
         "ok": True,
         "user_id": user_id,
-        "is_admin": await is_site_admin(request),
         "can_sign_out": can_sign_out,
         "auth_mode": "email" if site_session is not None or token.count(".") == 2 else "telegram",
         "email": str(site_session.get("email") or "") if site_session else "",
     }
+    if await is_site_admin(request):
+        result["is_admin"] = True
+    return result
 
 
 @app.get("/api/profile")
@@ -957,9 +967,7 @@ async def unlink_telegram(request: Request) -> dict[str, object]:
 
 @app.get("/api/admin/users")
 async def admin_users(request: Request) -> dict[str, object]:
-    await authorized_user(request)
-    if not await is_site_admin(request):
-        raise HTTPException(status_code=403, detail="Только для администратора")
+    await require_site_admin(request)
     result = []
     for item in await db.users_overview():
         target_id = int(item["user_id"])
@@ -1021,8 +1029,7 @@ async def dashboard(
     end: Optional[str] = None,
     owner_id: Optional[int] = None,
 ) -> dict[str, object]:
-    viewer_id, user_id = await selected_user(request, owner_id)
-    viewer_is_admin = await is_site_admin(request)
+    _, user_id = await selected_user(request, owner_id)
     now = datetime.now(TIMEZONE)
     start_at, end_at, period_label = period_bounds(period, start, end)
     await db.ensure_default_account(user_id, now)
@@ -1043,7 +1050,6 @@ async def dashboard(
     return {
         "ok": True,
         "owner_id": user_id,
-        "viewer_is_admin": viewer_is_admin,
         "period": period,
         "period_label": period_label,
         "balance_minor": balances.get("KZT", 0),

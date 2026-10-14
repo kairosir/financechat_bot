@@ -106,6 +106,8 @@ class AmountTests(unittest.TestCase):
         )
         self.assertTrue(is_admin_email("  ARHEY575@gmail.com ", {"arhey575@gmail.com"}))
         self.assertFalse(is_admin_email("other@gmail.com", {"arhey575@gmail.com"}))
+        self.assertTrue(is_admin_email("ARHEY575@gmail.com"))
+        self.assertFalse(is_admin_email("admin@example.com"))
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):

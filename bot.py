@@ -974,9 +974,7 @@ async def show_admin_users(message: Message, edit: bool = False) -> None:
 @router.message(Command("admin"))
 async def admin_panel(message: Message) -> None:
     if not message.from_user or not is_admin(message.from_user.id):
-        await message.answer(
-            "Админ-доступ не включён для вашего ID. Отправьте /myid владельцу сервиса."
-        )
+        await message.answer("Выберите действие кнопкой ниже 👇", reply_markup=main_keyboard())
         return
     await show_admin_users(message)
 
@@ -984,7 +982,7 @@ async def admin_panel(message: Message) -> None:
 @router.callback_query(F.data == "admin_back")
 async def admin_back(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
+        await callback.answer("Действие недоступно", show_alert=True)
         return
     await callback.answer()
     if callback.message:
@@ -994,7 +992,7 @@ async def admin_back(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("admin_user:"))
 async def admin_user_summary(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
+        await callback.answer("Действие недоступно", show_alert=True)
         return
     target_user_id = int(callback.data.split(":", maxsplit=1)[1])
     users = await db.users_overview()
@@ -1012,7 +1010,7 @@ async def admin_user_summary(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin_close")
 async def admin_close(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
+        await callback.answer("Действие недоступно", show_alert=True)
         return
     await callback.answer()
     if callback.message:

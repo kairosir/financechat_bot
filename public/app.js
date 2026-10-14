@@ -578,19 +578,35 @@ $('toggleBalances').addEventListener('click', () => document.body.classList.togg
 
 function renderSettings() {
   if (authSession) {
-    const adminCard = currentUserMeta?.is_admin ? `<article class="settings-card full admin-card"><span class="eyebrow">Администратор</span><h3>Панель управления</h3><p>Просмотр пользователей и их счетов. Доступ разрешён только владельцу.</p><button id="openAdminPanel" class="button button-primary" type="button">Открыть админку</button></article>` : '';
+    const isAdmin = currentUserMeta?.is_admin === true;
+    if (!isAdmin) $('adminDialog')?.remove();
+    const adminCard = isAdmin ? `<article class="settings-card full admin-card"><span class="eyebrow">Администратор</span><h3>Панель управления</h3><p>Просмотр пользователей и их счетов. Доступ разрешён только владельцу.</p><button id="openAdminPanel" class="button button-primary" type="button">Открыть админку</button></article>` : '';
     $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Аккаунт</span><h3>${escapeHtml(authSession.user?.email || 'Email-аккаунт')}</h3><p>Пароль, безопасность и привязка Telegram находятся в личном кабинете.</p><button id="openProfileSettings" class="button button-primary" type="button">Открыть личный кабинет</button></article><article class="settings-card"><span class="eyebrow">Сессия</span><h3>Автовыход через 3 дня</h3><p>Если вы не пользуетесь сайтом три дня, вход будет завершён автоматически.</p><button id="settingsSignOut" class="button" type="button">Выйти сейчас</button></article>${adminCard}<article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового в Purpose Finance</h3><p>История улучшений сайта и Telegram-бота.</p><button id="settingsUpdates" class="button" type="button">Посмотреть обновления</button></article>`;
     $('openProfileSettings').onclick = openProfile;
     $('settingsSignOut').onclick = () => signOut();
     $('settingsUpdates').onclick = openUpdates;
-    if ($('openAdminPanel')) $('openAdminPanel').onclick = openAdminPanel;
+    if (isAdmin) {
+      mountAdminDialog();
+      $('openAdminPanel').onclick = openAdminPanel;
+    }
   } else {
     $('settingsContent').innerHTML = `<article class="settings-card"><span class="eyebrow">Telegram Mini App</span><h3>Вы вошли автоматически</h3><p>Аккаунт определён Telegram. Пароль и отдельная регистрация здесь не нужны.</p></article><article class="settings-card"><span class="eyebrow">Синхронизация</span><h3>Одна база с ботом</h3><p>Все изменения, сделанные здесь или в чате с ботом, отображаются одинаково.</p></article><article class="settings-card full"><span class="eyebrow">Обновления</span><h3>Что нового?</h3><p>Посмотрите последние изменения продукта.</p><button id="settingsUpdates" class="button" type="button">Открыть</button></article>`;
     $('settingsUpdates').onclick = openUpdates;
   }
 }
 
+function mountAdminDialog() {
+  if ($('adminDialog')) return;
+  const dialog = document.createElement('dialog');
+  dialog.id = 'adminDialog';
+  dialog.className = 'modal modal-wide';
+  dialog.innerHTML = `<div class="modal-header"><div><span class="eyebrow">Только владелец</span><h2>Панель администратора</h2></div><button class="icon-button" type="button" aria-label="Закрыть">×</button></div><p class="admin-security-note">Доступ проверяется сервером по аккаунту владельца.</p><div id="adminUsersList" class="updates-list"><div class="empty-state">Загрузка…</div></div>`;
+  dialog.querySelector('button').onclick = () => dialog.close();
+  document.body.appendChild(dialog);
+}
+
 async function openAdminPanel() {
+  if (currentUserMeta?.is_admin !== true || !$('adminDialog')) return;
   $('adminDialog').showModal();
   $('adminUsersList').innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
   try {
@@ -687,7 +703,7 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=13').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=14').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {

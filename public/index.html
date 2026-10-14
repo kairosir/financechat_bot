@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="/purpose-finance-avatar.png" />
     <link rel="stylesheet" href="/styles.css?v=5" />
     <script defer src="https://telegram.org/js/telegram-web-app.js?63"></script>
-    <script defer src="/app.js?v=8"></script>
+    <script defer src="/app.js?v=9"></script>
   </head>
   <body>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -743,29 +743,6 @@
             <p id="changePasswordStatus" class="form-status"></p>
           </form>
         </section>
-      </div>
-    </dialog>
-
-    <dialog id="adminDialog" class="modal modal-wide">
-      <div class="modal-header">
-        <div>
-          <span class="eyebrow">Только владелец</span>
-          <h2>Панель администратора</h2>
-        </div>
-        <button
-          class="icon-button"
-          data-close-dialog="adminDialog"
-          type="button"
-        >
-          ×
-        </button>
-      </div>
-      <p class="admin-security-note">
-        Доступ проверяется сервером по email администратора. Остальные
-        пользователи получают отказ, даже если попробуют открыть API напрямую.
-      </p>
-      <div id="adminUsersList" class="updates-list">
-        <div class="empty-state">Загрузка…</div>
       </div>
     </dialog>
 
