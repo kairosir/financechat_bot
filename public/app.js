@@ -251,6 +251,7 @@ async function loadDashboard() {
 }
 
 async function enterApplication(knownUser = null) {
+  showOnly('appScreen');
   const [, me] = await Promise.all([
     loadDashboard(),
     knownUser ? Promise.resolve(knownUser) : api('/api/me').catch(() => ({can_sign_out:false})),

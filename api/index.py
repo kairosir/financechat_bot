@@ -258,7 +258,6 @@ async def telegram_bot_username() -> str | None:
 
 
 async def authorized_user(request: Request) -> int:
-    await ensure_initialized()
     telegram_user_id = verify_telegram_init_data(
         request.headers.get("X-Telegram-Init-Data", "")
     )
@@ -269,6 +268,7 @@ async def authorized_user(request: Request) -> int:
     if telegram_user_id is not None:
         return telegram_user_id
     if auth_claims:
+        await ensure_initialized()
         return await db.user_by_auth_subject(
             str(auth_claims["sub"]),
             datetime.now(TIMEZONE),
@@ -283,11 +283,13 @@ async def authorized_user(request: Request) -> int:
     if telegram_session_user is not None:
         return telegram_session_user
     if scheme.lower() == "bearer" and token:
+        await ensure_initialized()
         user_id = await db.user_by_shortcut_token(token)
         if user_id is not None:
             return user_id
     token = request.query_params.get("t", "")
     if token:
+        await ensure_initialized()
         user_id = await db.user_by_shortcut_token(token)
         if user_id is not None:
             return user_id
