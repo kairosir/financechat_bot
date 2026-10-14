@@ -1025,10 +1025,12 @@ async def dashboard(
     start_at, end_at, period_label = period_bounds(period, start, end)
     await db.ensure_default_account(user_id, now)
     await db.accrue_deposit_interest(user_id, now)
-    account_items = await db.accounts(user_id)
-    interest_summaries = await db.deposit_interest_summaries(user_id, now.date())
-    totals = await db.totals_by_currency(user_id, start_at, end_at)
-    history = await db.recent(user_id, limit=100, start_at=start_at, end_at=end_at)
+    account_items, interest_summaries, totals, history = await asyncio.gather(
+        db.accounts(user_id),
+        db.deposit_interest_summaries(user_id, now.date()),
+        db.totals_by_currency(user_id, start_at, end_at),
+        db.recent(user_id, limit=100, start_at=start_at, end_at=end_at),
+    )
     balances: dict[str, int] = {}
     for item in account_items:
         balances[item.currency] = balances.get(item.currency, 0) + item.balance_minor

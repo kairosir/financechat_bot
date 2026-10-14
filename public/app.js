@@ -12,6 +12,7 @@ const accountMeta = {
 };
 
 let authClient = null;
+let authClientPromise = null;
 let authSession = null;
 let authToken = '';
 let authMode = 'signin';
@@ -32,6 +33,35 @@ const ACTIVITY_KEY = 'purpose_finance_activity_v2';
 const LINK_KEY = 'purpose_finance_link_v2';
 const RECOVERY_KEY = 'purpose_finance_recovery_v1';
 const INACTIVITY_MS = 3 * 24 * 60 * 60 * 1000;
+
+async function ensureAuthClient() {
+  if (authClient) return authClient;
+  if (authClientPromise) return authClientPromise;
+  authClientPromise = (async () => {
+    const configPromise = fetch('/api/config').then(async response => {
+      const config = await response.json().catch(() => ({}));
+      if (!response.ok || !config.auth_enabled || !config.auth_url) throw new Error('Сервис входа временно недоступен');
+      return config;
+    });
+    const bundlePromise = window.PurposeAuthBundle?.createClient
+      ? Promise.resolve()
+      : new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = '/auth-client.js?v=3';
+          script.onload = resolve;
+          script.onerror = () => reject(new Error('Не удалось загрузить сервис входа'));
+          document.head.appendChild(script);
+        });
+    const [config] = await Promise.all([configPromise, bundlePromise]);
+    if (!window.PurposeAuthBundle?.createClient) throw new Error('Сервис входа временно недоступен');
+    authClient = window.PurposeAuthBundle.createClient(config.auth_url);
+    return authClient;
+  })().catch(error => {
+    authClientPromise = null;
+    throw error;
+  });
+  return authClientPromise;
+}
 
 if (isMiniApp) {
   document.documentElement.classList.add('telegram-mini-app');
@@ -220,9 +250,11 @@ async function loadDashboard() {
   return data;
 }
 
-async function enterApplication() {
-  await loadDashboard();
-  const me = await api('/api/me').catch(() => ({can_sign_out:false}));
+async function enterApplication(knownUser = null) {
+  const [, me] = await Promise.all([
+    loadDashboard(),
+    knownUser ? Promise.resolve(knownUser) : api('/api/me').catch(() => ({can_sign_out:false})),
+  ]);
   currentUserMeta = me;
   $('signOutButton').classList.toggle('hidden', isMiniApp || isShortcut || !me.can_sign_out);
   $('profileButton').classList.toggle('hidden', !authSession);
@@ -268,7 +300,6 @@ document.querySelectorAll('[data-password-toggle]').forEach(button => button.add
 
 $('authForm').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!authClient) return setStatus('authStatus','Вход временно недоступен','error');
   const email = $('authEmail').value.trim().toLowerCase();
   const password = $('authPassword').value;
   if (!email || password.length < 8) return setStatus('authStatus','Проверьте email и пароль — минимум 8 символов','error');
@@ -306,7 +337,8 @@ $('recoveryForm').addEventListener('submit', async event => {
   $('recoverySubmit').disabled = true;
   setStatus('recoveryStatus','Отправляем письмо…');
   try {
-    const result = await authClient.requestPasswordReset({email,redirectTo:`${location.origin}/?reset=1`});
+    const client = await ensureAuthClient();
+    const result = await client.requestPasswordReset({email,redirectTo:`${location.origin}/?reset=1`});
     if (result?.error) throw new Error(result.error.message || 'Не удалось отправить письмо');
     setStatus('recoveryStatus','Если аккаунт существует, письмо уже отправлено. Проверьте также папку «Спам».','success');
   } catch (error) { setStatus('recoveryStatus',friendlyError(error),'error'); }
@@ -333,7 +365,10 @@ async function checkRecovery() {
   const result = await api(`/api/auth/telegram/recovery/status?token=${encodeURIComponent(saved.token)}`);
   if (result.status === 'approved') {
     clearRecovery();
-    try { await authClient?.requestPasswordReset({email:saved.email,redirectTo:`${location.origin}/?reset=1`}); } catch (_) {}
+    try {
+      const client = await ensureAuthClient();
+      await client.requestPasswordReset({email:saved.email,redirectTo:`${location.origin}/?reset=1`});
+    } catch (_) {}
     setStatus('recoveryStatus','Telegram подтвердил личность. Доступ восстановлен, а ссылка для нового пароля отправлена на email.','success');
     toast('Доступ восстановлен через Telegram');
     await enterApplication();
@@ -370,7 +405,8 @@ $('resetForm').addEventListener('submit', async event => {
   if (password !== $('resetPasswordConfirm').value) return setStatus('resetStatus','Пароли не совпадают','error');
   const token = new URLSearchParams(location.search).get('token') || '';
   try {
-    const result = await authClient.resetPassword({newPassword:password,token});
+    const client = await ensureAuthClient();
+    const result = await client.resetPassword({newPassword:password,token});
     if (result?.error) throw new Error(result.error.message || 'Ссылка недействительна или устарела');
     setStatus('resetStatus','Пароль изменён. Теперь войдите с новым паролем.','success');
     history.replaceState({},'',location.pathname);
@@ -626,7 +662,8 @@ $('changePasswordForm').addEventListener('submit',async event => {
   $('changePasswordSubmit').disabled = true;
   setStatus('changePasswordStatus','Меняем пароль…');
   try {
-    const result = await authClient.changePassword({currentPassword,newPassword,revokeOtherSessions:$('revokeOtherSessions').checked});
+    const client = await ensureAuthClient();
+    const result = await client.changePassword({currentPassword,newPassword,revokeOtherSessions:$('revokeOtherSessions').checked});
     if (result?.error) throw new Error(result.error.message || 'Не удалось изменить пароль');
     await refreshAuthToken(3);
     event.currentTarget.reset();
@@ -649,21 +686,12 @@ $('signOutButton').addEventListener('click',() => signOut());
 $('retryMiniApp').addEventListener('click',() => location.reload());
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=12').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js?v=13').catch(() => {});
   $('todayLabel').textContent = new Intl.DateTimeFormat('ru-RU',{weekday:'long',day:'numeric',month:'long'}).format(new Date());
   try {
     if (isMiniApp || isShortcut) {
       await enterApplication();
       return;
-    }
-    const configResponse = await fetch('/api/config');
-    const config = await configResponse.json();
-    if (!config.auth_enabled || !window.PurposeAuthBundle?.createClient) throw new Error('Сервис входа временно недоступен');
-    authClient = window.PurposeAuthBundle.createClient(config.auth_url);
-    const pendingRecovery = restoreRecovery();
-    if (pendingRecovery) {
-      startRecoveryPolling();
-      if (await checkRecovery().catch(() => false)) return;
     }
     const firstPartySession = await api('/api/me').catch(() => null);
     if (firstPartySession?.auth_mode === 'email') {
@@ -671,18 +699,20 @@ async function boot() {
       currentUserMeta = firstPartySession;
       if (sessionInactive()) { await signOut({inactive:true}); return; }
       localStorage.setItem(ACTIVITY_KEY,localStorage.getItem(ACTIVITY_KEY) || String(Date.now()));
-      await enterApplication();
+      await enterApplication(firstPartySession);
       return;
     }
-    await refreshAuthToken(2);
-    if (authSession && sessionInactive()) { await signOut({inactive:true}); return; }
-    const params = new URLSearchParams(location.search);
-    if (params.get('reset') === '1' || params.get('token')) $('resetDialog').showModal();
-    if (authToken) {
-      try { await api('/api/auth/session'); await enterApplication(); return; }
-      catch (_) { authSession = null; authToken = ''; }
-    }
     showOnly('authScreen');
+    const params = new URLSearchParams(location.search);
+    if (params.get('reset') === '1' || params.get('token')) {
+      await ensureAuthClient();
+      $('resetDialog').showModal();
+    }
+    const pendingRecovery = restoreRecovery();
+    if (pendingRecovery) {
+      startRecoveryPolling();
+      if (await checkRecovery().catch(() => false)) return;
+    }
   } catch (error) {
     $('bootMessage').textContent = friendlyError(error);
     if (isMiniApp) showOnly('miniAppError');
